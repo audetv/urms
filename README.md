@@ -28,6 +28,11 @@ export URMS_IMAP_USERNAME="support@yourcompany.com"
 export URMS_IMAP_PASSWORD="your_password"
 export URMS_IMAP_SERVER="outlook.office365.com"  # опционально
 
+# Например устанавливаем соединение с яндекс почтой
+export URMS_IMAP_USERNAME="you-support-email@yandex.ru"
+export URMS_IMAP_PASSWORD="your_app_password" # пароль приложения https://yandex.ru/support/id/ru/authorization/app-passwords.html
+export URMS_IMAP_SERVER="imap.yandex.ru"
+
 # Запускаем тест
 go run cmd/test-imap/main.go
 ```
