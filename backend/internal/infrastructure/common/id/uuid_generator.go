@@ -3,7 +3,6 @@ package id
 import (
 	"fmt"
 
-	// Импортируем domain
 	"github.com/google/uuid"
 )
 
