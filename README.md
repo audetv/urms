@@ -14,6 +14,8 @@ URMS - это унифицированная система для приема 
 - **Search**: ManticoreSearch (full-text + vector)
 - **AI**: qwen3-4B для классификации
 
+[URMS-OS Architecture Principles — архитектурные принципы ](./ARCHITECTURE_PRINCIPLES.md)
+
 ## 📚 Документация
 
 - [Спецификация проекта](./docs/specifications/URMS_SPECIFICATION.md)
