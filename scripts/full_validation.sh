@@ -68,7 +68,7 @@ print_status $INFRASTRUCTURE_BUILD_RESULT "Infrastructure layer compilation"
 
 # Check test application compilation
 echo "🔍 Compiling test applications..."
-go build ./cmd/test-new-architecture/...
+go build ./cmd/test-imap/...
 TEST_APP_RESULT=$?
 print_status $TEST_APP_RESULT "Test application compilation"
 

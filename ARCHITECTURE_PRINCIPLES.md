@@ -131,6 +131,24 @@ func TestTicketRepositoryContract(t *testing.T, repo ports.TicketRepository) {
     assert.Equal(t, ticket, found)
 }
 ```
+## 🔍 Validation & Compliance
+
+### Automated Architecture Checks
+The project includes automated scripts to enforce architectural rules:
+
+```bash
+# Validate Hexagonal Architecture compliance
+./scripts/architecture_audit.sh
+
+# Full validation suite
+./scripts/full_validation.sh
+```
+**These scripts ensure:**
+- Core layer has no infrastructure dependencies
+- Domain models are pure (no external imports)
+- All ports have implementations
+- Code compiles without errors
+
 ## 📚 Migration & Configuration
 ### Configuration Structure
 ```yaml

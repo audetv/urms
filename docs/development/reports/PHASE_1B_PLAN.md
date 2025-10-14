@@ -146,7 +146,7 @@ backend/migrations/001_create_email_tables.sql
 📄 internal/core/services/email_service.go  
 📄 internal/infrastructure/email/imap_adapter.go  
 📄 internal/infrastructure/email/imap/client.go  
-📄 cmd/test-new-architecture/main.go  
+📄 cmd/test-imap/main.go  
 
 
 ## 🎯 Готово к передаче!
