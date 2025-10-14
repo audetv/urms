@@ -43,6 +43,11 @@ func (a *IMAPAdapter) HealthCheck(ctx context.Context) error {
 
 // FetchMessages получает сообщения по критериям
 func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	// ВЫБИРАЕМ почтовый ящик перед поиском
+	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
+		return nil, fmt.Errorf("failed to select mailbox %s: %w", criteria.Mailbox, err)
+	}
+
 	// Конвертируем доменные критерии в IMAP-специфичные
 	imapCriteria := a.convertToIMAPCriteria(criteria)
 
