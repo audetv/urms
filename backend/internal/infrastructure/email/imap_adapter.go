@@ -7,7 +7,7 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
-	"github.com/audetv/urms/internal/email/imapclient"
+	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
 	"github.com/emersion/go-imap"
 	"github.com/rs/zerolog/log"
 )
