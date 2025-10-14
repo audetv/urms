@@ -36,27 +36,23 @@
 ### Созданные файлы:
 ```text
 backend/internal/
-├── core/                     # ЧИСТАЯ БИЗНЕС-ЛОГИКА
-│   ├── domain/               # Доменные модели и бизнес-правила
-│   │   ├── email.go
-│   │   ├── errors.go
-│   │   └── id_generator.go   # Интерфейс IDGenerator
-│   ├── ports/                # Интерфейсы (контракты)
-│   │   ├── email_gateway.go
-│   │   ├── message_processor.go
-│   │   └── common.go
-│   └── services/             # Бизнес-сервисы (use cases)
-│       ├── email_service.go
-│       └── dummy_processor.go
-└── infrastructure/           # ВНЕШНИЕ АДАПТЕРЫ
-    ├── email/                # Email провайдеры
-    │   └── imap_adapter.go   # Адаптер IMAP клиента
-    ├── persistence/          # Хранилища данных
+├── core/                          ← ЧИСТАЯ бизнес-логика
+│   ├── domain/
+│   ├── ports/
+│   └── services/
+└── infrastructure/                ← ВСЯ инфраструктура
+    ├── email/
+    │   ├── imap_adapter.go        ← Адаптер (зависит от core/ports)
+    │   └── imap/                  ← IMAP инфраструктура
+    │       ├── client.go          ← Низкоуровневый IMAP клиент
+    │       ├── config.go          ← IMAP конфигурация  
+    │       └── utils.go           ← IMAP утилиты    
+    ├── persistence/
     │   └── email/
-    │       └── inmemory_repo.go  # InMemory репозиторий
-    └── common/               # Общие инфраструктурные компоненты
+    │       └── inmemory_repo.go
+    └── common/
         └── id/
-            └── uuid_generator.go  # Реализация IDGenerator
+            └── uuid_generator.go
 ```
 
 
