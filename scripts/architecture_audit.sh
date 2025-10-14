@@ -1,12 +1,3 @@
-
-# URMS-OS Architecture Validation Rules
-**Automated Checks & Manual Review Guidelines**
-**Version: 1.0**
-
-## 🔧 Automated Validation Scripts
-
-### 1. Dependency Check Script
-```bash
 #!/bin/bash
 # validate_architecture.sh
 
@@ -44,4 +35,3 @@ if ! go build ./internal/infrastructure/... > /dev/null 2>&1; then
 fi
 
 echo "✅ All architecture checks passed"
-```
