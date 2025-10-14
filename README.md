@@ -36,3 +36,5 @@ export URMS_IMAP_SERVER="imap.yandex.ru"
 # Запускаем тест
 go run cmd/test-imap/main.go
 ```
+
+## Licensed under the Apache License 2.0
