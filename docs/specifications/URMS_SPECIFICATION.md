@@ -285,5 +285,5 @@ For Open Source:"Following open-source principles of URMS-OS..."
 ---
 
 **Document Maintainer**: Project Architect  
-**License**: Open Source (To be finalized)  
-**Last Updated**: ${current_date}  
+**License**: Licensed under the Apache License 2.0
+**Last Updated**: 2025-10-15  
