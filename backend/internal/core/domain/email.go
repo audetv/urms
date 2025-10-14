@@ -6,17 +6,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
-
-// ===== INTEGRATION LAYER DOMAIN =====
-// Email-specific domain models for Integration Layer
 
 // Value Objects для Email домена
 type MessageID string
 type EmailAddress string
 type Direction string
+type AttachmentID string
 
 const (
 	DirectionIncoming Direction = "incoming"
@@ -30,7 +26,7 @@ var (
 	ErrMessageTooLarge     = errors.New("email message size exceeds limit")
 )
 
-// EmailMessage - доменная сущность для email сообщений в Integration Layer
+// EmailMessage - доменная сущность для email сообщений
 type EmailMessage struct {
 	ID         MessageID
 	MessageID  string   // RFC Message-ID header
@@ -38,8 +34,7 @@ type EmailMessage struct {
 	References []string // RFC References headers
 
 	// External Reference to TicketManagement domain
-	// Это связь с другим bounded context
-	RelatedTicketID *string `json:"related_ticket_id"` // Optional: ID связанной заявки
+	RelatedTicketID *string `json:"related_ticket_id"`
 
 	From    EmailAddress
 	To      []EmailAddress
@@ -57,15 +52,15 @@ type EmailMessage struct {
 	Headers map[string][]string
 
 	// Metadata
-	Processed   bool      `json:"processed"`    // Обработано ли системой
-	ProcessedAt time.Time `json:"processed_at"` // Когда обработано
+	Processed   bool      `json:"processed"`
+	ProcessedAt time.Time `json:"processed_at"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
 // Attachment - вложение email сообщения
 type Attachment struct {
-	ID          uuid.UUID
+	ID          AttachmentID
 	Name        string
 	ContentType string
 	Size        int64
@@ -95,10 +90,16 @@ type EmailChannelConfig struct {
 	PollInterval time.Duration
 }
 
-// Domain Methods для Email домена
+// Domain Methods
 
 // NewIncomingEmail создает новое входящее email сообщение
-func NewIncomingEmail(from EmailAddress, to []EmailAddress, subject, messageID string) (*EmailMessage, error) {
+func NewIncomingEmail(
+	from EmailAddress,
+	to []EmailAddress,
+	subject string,
+	messageID string,
+	idGenerator IDGenerator,
+) (*EmailMessage, error) {
 	if err := validateEmailAddress(from); err != nil {
 		return nil, err
 	}
@@ -114,7 +115,7 @@ func NewIncomingEmail(from EmailAddress, to []EmailAddress, subject, messageID s
 	}
 
 	msg := &EmailMessage{
-		ID:        MessageID(generateMessageID()),
+		ID:        MessageID(idGenerator.GenerateID()),
 		From:      from,
 		To:        to,
 		Subject:   subject,
@@ -131,8 +132,14 @@ func NewIncomingEmail(from EmailAddress, to []EmailAddress, subject, messageID s
 }
 
 // NewOutgoingEmail создает новое исходящее email сообщение
-func NewOutgoingEmail(from EmailAddress, to []EmailAddress, subject string) (*EmailMessage, error) {
-	msg, err := NewIncomingEmail(from, to, subject, generateMessageID())
+func NewOutgoingEmail(
+	from EmailAddress,
+	to []EmailAddress,
+	subject string,
+	idGenerator IDGenerator,
+) (*EmailMessage, error) {
+	messageID := idGenerator.GenerateMessageID()
+	msg, err := NewIncomingEmail(from, to, subject, messageID, idGenerator)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +183,10 @@ func (m *EmailMessage) Validate() error {
 		return ErrEmptySubject
 	}
 
+	if m.BodyText == "" && m.BodyHTML == "" {
+		return errors.New("email must have either text or HTML body")
+	}
+
 	return nil
 }
 
@@ -185,13 +196,17 @@ func (m *EmailMessage) IsReply() bool {
 }
 
 // AddAttachment добавляет вложение к сообщению
-func (m *EmailMessage) AddAttachment(name, contentType string, data []byte) error {
+func (m *EmailMessage) AddAttachment(
+	name, contentType string,
+	data []byte,
+	idGenerator IDGenerator,
+) error {
 	if int64(len(data)) > 10*1024*1024 {
 		return errors.New("attachment size exceeds 10MB limit")
 	}
 
 	attachment := Attachment{
-		ID:          uuid.New(),
+		ID:          AttachmentID(idGenerator.GenerateID()),
 		Name:        name,
 		ContentType: contentType,
 		Size:        int64(len(data)),
@@ -214,7 +229,8 @@ func (m *EmailMessage) CanAutoReply(policy EmailProcessingPolicy) bool {
 
 	// Бизнес-правило: не отправляем авто-ответы на авто-ответы
 	if strings.Contains(strings.ToLower(m.Subject), "auto:") ||
-		strings.Contains(strings.ToLower(m.Subject), "automatic") {
+		strings.Contains(strings.ToLower(m.Subject), "automatic") ||
+		strings.Contains(strings.ToLower(m.Subject), "autoreply") {
 		return false
 	}
 
@@ -229,11 +245,34 @@ func (m *EmailMessage) IsSpam(policy EmailProcessingPolicy) bool {
 
 	spamIndicators := []string{
 		"viagra", "casino", "lottery", "prize", "winner",
+		"credit card", "loan", "mortgage", "investment",
 	}
 
 	content := strings.ToLower(m.Subject + " " + m.BodyText)
 	for _, indicator := range spamIndicators {
 		if strings.Contains(content, indicator) {
+			return true
+		}
+	}
+
+	// Проверка заблокированных отправителей
+	for _, blocked := range policy.BlockedSenders {
+		if m.From == blocked {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsFromAllowedSender проверяет разрешенного отправителя
+func (m *EmailMessage) IsFromAllowedSender(policy EmailProcessingPolicy) bool {
+	if len(policy.AllowedSenders) == 0 {
+		return true // Если список пустой, все разрешены
+	}
+
+	for _, allowed := range policy.AllowedSenders {
+		if m.From == allowed {
 			return true
 		}
 	}
@@ -248,8 +287,4 @@ func validateEmailAddress(addr EmailAddress) error {
 		return ErrInvalidEmailAddress
 	}
 	return nil
-}
-
-func generateMessageID() string {
-	return fmt.Sprintf("%s@urms.local", uuid.New().String())
 }

@@ -11,11 +11,12 @@ import (
 
 // EmailService реализует бизнес-логику работы с email
 type EmailService struct {
-	gateway   ports.EmailGateway
-	repo      ports.EmailRepository
-	processor ports.MessageProcessor
-	policy    domain.EmailProcessingPolicy
-	logger    ports.Logger
+	gateway     ports.EmailGateway
+	repo        ports.EmailRepository
+	processor   ports.MessageProcessor
+	idGenerator domain.IDGenerator
+	policy      domain.EmailProcessingPolicy
+	logger      ports.Logger
 }
 
 // NewEmailService создает новый экземпляр EmailService
@@ -23,15 +24,17 @@ func NewEmailService(
 	gateway ports.EmailGateway,
 	repo ports.EmailRepository,
 	processor ports.MessageProcessor,
+	idGenerator domain.IDGenerator,
 	policy domain.EmailProcessingPolicy,
 	logger ports.Logger,
 ) *EmailService {
 	return &EmailService{
-		gateway:   gateway,
-		repo:      repo,
-		processor: processor,
-		policy:    policy,
-		logger:    logger,
+		gateway:     gateway,
+		repo:        repo,
+		processor:   processor,
+		idGenerator: idGenerator,
+		policy:      policy,
+		logger:      logger,
 	}
 }
 
@@ -93,39 +96,52 @@ func (s *EmailService) SendEmail(ctx context.Context, msg domain.EmailMessage) e
 		return nil
 	}
 
-	// Проверяем спам
-	if msg.IsSpam(s.policy) {
-		s.logger.Warn(ctx, "Email detected as spam, skipping send",
+	// Проверяем спам (для исходящих - проверяем получателей)
+	if s.isSpamRecipient(msg) {
+		s.logger.Warn(ctx, "Email to blocked recipient detected as spam",
 			"message_id", msg.MessageID)
-		return domain.NewEmailDomainError("email detected as spam", "SPAM_DETECTED", nil)
+		return domain.NewEmailDomainError("email to blocked recipient", "SPAM_RECIPIENT", nil)
 	}
 
-	// Сохраняем в репозиторий перед отправкой
-	msg.Direction = domain.DirectionOutgoing
-	msg.Source = "internal"
-	msg.CreatedAt = time.Now()
-	msg.UpdatedAt = time.Now()
+	// Создаем исходящее сообщение с помощью IDGenerator
+	outgoingMsg, err := domain.NewOutgoingEmail(
+		msg.From,
+		msg.To,
+		msg.Subject,
+		s.idGenerator,
+	)
+	if err != nil {
+		return err
+	}
 
-	if err := s.repo.Save(ctx, &msg); err != nil {
+	// Копируем остальные поля
+	outgoingMsg.BodyHTML = msg.BodyHTML
+	outgoingMsg.BodyText = msg.BodyText
+	outgoingMsg.CC = msg.CC
+	outgoingMsg.BCC = msg.BCC
+	outgoingMsg.Attachments = msg.Attachments
+
+	// Сохраняем в репозиторий перед отправкой
+	if err := s.repo.Save(ctx, outgoingMsg); err != nil {
 		return fmt.Errorf("failed to save outgoing email: %w", err)
 	}
 
 	// Отправляем через gateway
-	if err := s.gateway.SendMessage(ctx, msg); err != nil {
+	if err := s.gateway.SendMessage(ctx, *outgoingMsg); err != nil {
 		return fmt.Errorf("failed to send email: %w", err)
 	}
 
 	// Обрабатываем исходящее сообщение
 	if s.processor != nil {
-		if err := s.processor.ProcessOutgoingEmail(ctx, msg); err != nil {
+		if err := s.processor.ProcessOutgoingEmail(ctx, *outgoingMsg); err != nil {
 			s.logger.Error(ctx, "Failed to process outgoing email",
-				"message_id", msg.MessageID, "error", err)
+				"message_id", outgoingMsg.MessageID, "error", err)
 			// Не прерываем выполнение, т.к. сообщение уже отправлено
 		}
 	}
 
 	s.logger.Info(ctx, "Email sent successfully",
-		"message_id", msg.MessageID, "to", msg.To)
+		"message_id", outgoingMsg.MessageID, "to", outgoingMsg.To)
 
 	return nil
 }
@@ -207,6 +223,19 @@ func (s *EmailService) processSingleEmail(ctx context.Context, msg domain.EmailM
 		return nil
 	}
 
+	// Проверяем разрешенных отправителей
+	if !msg.IsFromAllowedSender(s.policy) {
+		s.logger.Warn(ctx, "Email from blocked sender",
+			"message_id", msg.MessageID, "from", msg.From)
+		msg.Processed = true
+		msg.ProcessedAt = time.Now()
+		if err := s.repo.Save(ctx, &msg); err != nil {
+			s.logger.Error(ctx, "Failed to save blocked sender email",
+				"message_id", msg.MessageID, "error", err)
+		}
+		return nil
+	}
+
 	// Сохраняем сообщение
 	msg.Direction = domain.DirectionIncoming
 	msg.Processed = false
@@ -244,6 +273,19 @@ func (s *EmailService) processSingleEmail(ctx context.Context, msg domain.EmailM
 		"message_id", msg.MessageID, "subject", msg.Subject)
 
 	return nil
+}
+
+// isSpamRecipient проверяет получателей на спам (для исходящих)
+func (s *EmailService) isSpamRecipient(msg domain.EmailMessage) bool {
+	// Проверяем всех получателей на наличие в заблокированных
+	for _, recipient := range msg.To {
+		for _, blocked := range s.policy.BlockedSenders {
+			if recipient == blocked {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // getLastPollTime возвращает время последнего успешного опроса
