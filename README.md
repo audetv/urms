@@ -1,3 +1,39 @@
+# URMS - Unified Request Management System
+
+🌐 **Open Source система управления заявками из различных источников**
+
+## 🎯 О проекте
+
+URMS - это унифицированная система для приема и обработки заявок из email, Telegram, веб-форм и других каналов с AI-классификацией.
+
+## 🏗️ Архитектура
+
+- **Backend**: Go (Gin/Fiber)
+- **Frontend**: Vue 3 + TypeScript  
+- **Database**: PostgreSQL + Redis
+- **Search**: ManticoreSearch (full-text + vector)
+- **AI**: qwen3-4B для классификации
+
+## 📚 Документация
+
+- [Спецификация проекта](./docs/specifications/URMS_SPECIFICATION.md)
+- [Отчеты о разработке](./docs/development/DEVELOPMENT_REPORTS.md)
+- [Дорожная карта](./docs/development/ROADMAP.md)
+- [Email модуль](./docs/specifications/EMAIL_MODULE_SPEC.md)
+
+## 🚀 Быстрый старт
+
+```bash
+# Клонирование репозитория
+git clone https://github.com/audetv/urms.git
+cd urms/backend
+
+# Запуск тестового IMAP клиента
+export URMS_IMAP_USERNAME="your_email"
+export URMS_IMAP_PASSWORD="your_password"
+go run cmd/test-imap/main.go
+```
+
 ## Структура проекта
 
 ```text
@@ -36,5 +72,5 @@ export URMS_IMAP_SERVER="imap.yandex.ru"
 # Запускаем тест
 go run cmd/test-imap/main.go
 ```
-
-## Licensed under the Apache License 2.0
+## 📄 Лицензия
+### Licensed under the Apache License 2.0
