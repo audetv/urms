@@ -23,7 +23,7 @@ func TestEmailIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	// Используем InMemory репозиторий для тестирования
-	repo := persistence.NewInMemoryEmailRepo()
+	repo := persistence.NewEmailRepository(persistence.RepositoryTypeInMemory, nil)
 	idGenerator := id.NewUUIDGenerator()
 
 	// Создаем тестовый gateway (заглушка)
@@ -111,7 +111,7 @@ func TestEmailRepositoryContractWithPostgres(t *testing.T) {
 
 	setupRepo := func() ports.EmailRepository {
 		// TODO: Реализовать создание Postgres репозитория
-		return persistence.NewInMemoryEmailRepo() // Временная заглушка
+		return persistence.NewEmailRepository(persistence.RepositoryTypeInMemory, nil) // Временная заглушка
 	}
 
 	// Запускаем контрактные тесты

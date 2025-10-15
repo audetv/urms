@@ -81,7 +81,7 @@ func main() {
 	// Infrastructure layer
 	fmt.Println("🛠️  Initializing dependencies...")
 	imapAdapter := email.NewIMAPAdapter(imapConfig)
-	emailRepo := persistence.NewInMemoryEmailRepo()
+	emailRepo := persistence.NewEmailRepository(persistence.RepositoryTypeInMemory, nil)
 	idGenerator := id.NewUUIDGenerator()
 
 	// Domain policies

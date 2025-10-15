@@ -1,4 +1,4 @@
-package persistence
+package inmemory
 
 import (
 	"context"
