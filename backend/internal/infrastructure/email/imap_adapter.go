@@ -12,17 +12,28 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// MessageBodyInfo содержит распарсенную информацию о теле сообщения
+type MessageBodyInfo struct {
+	Text        string
+	HTML        string
+	Attachments []domain.Attachment
+}
+
 // IMAPAdapter реализует ports.EmailGateway используя существующий IMAP клиент
 type IMAPAdapter struct {
-	client *imapclient.Client
-	config *imapclient.Config
+	client            *imapclient.Client
+	config            *imapclient.Config
+	mimeParser        *MIMEParser
+	addressNormalizer *AddressNormalizer
 }
 
 // NewIMAPAdapter создает новый IMAP адаптер
 func NewIMAPAdapter(config *imapclient.Config) *IMAPAdapter {
 	return &IMAPAdapter{
-		client: imapclient.NewClient(config),
-		config: config,
+		client:            imapclient.NewClient(config),
+		config:            config,
+		mimeParser:        NewMIMEParser(),
+		addressNormalizer: NewAddressNormalizer(),
 	}
 }
 
@@ -80,6 +91,47 @@ func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCri
 		domainMsg, err := a.convertToDomainMessage(msg)
 		if err != nil {
 			log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message")
+			continue
+		}
+		domainMessages = append(domainMessages, domainMsg)
+	}
+
+	return domainMessages, nil
+}
+
+// FetchMessagesWithBody получает сообщения с полным телом и вложениями
+func (a *IMAPAdapter) FetchMessagesWithBody(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
+		return nil, fmt.Errorf("failed to select mailbox %s: %w", criteria.Mailbox, err)
+	}
+
+	imapCriteria := a.convertToIMAPCriteria(criteria)
+	messageUIDs, err := a.client.SearchMessages(imapCriteria)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search messages: %w", err)
+	}
+
+	if len(messageUIDs) == 0 {
+		return []domain.EmailMessage{}, nil
+	}
+
+	seqSet := new(imap.SeqSet)
+	for _, uid := range messageUIDs {
+		seqSet.AddNum(uid)
+	}
+
+	// Получаем полные сообщения с телом и вложениями
+	fetchItems := imapclient.CreateFetchItems(true) // С телом сообщения
+	messagesChan, err := a.client.FetchMessages(seqSet, fetchItems)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch messages: %w", err)
+	}
+
+	var domainMessages []domain.EmailMessage
+	for msg := range messagesChan {
+		domainMsg, err := a.convertToDomainMessageWithBody(msg)
+		if err != nil {
+			log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message with body")
 			continue
 		}
 		domainMessages = append(domainMessages, domainMsg)
@@ -207,6 +259,123 @@ func (a *IMAPAdapter) convertToDomainMessage(imapMsg *imap.Message) (domain.Emai
 	}
 
 	return domainMsg, nil
+}
+
+// convertToDomainMessageWithBody конвертирует IMAP сообщение с полным парсингом
+func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (domain.EmailMessage, error) {
+	if imapMsg.Envelope == nil {
+		return domain.EmailMessage{}, fmt.Errorf("IMAP message has no envelope")
+	}
+
+	// Извлекаем базовую информацию
+	envelopeInfo := imapclient.GetMessageEnvelopeInfo(imapMsg)
+	if envelopeInfo == nil {
+		return domain.EmailMessage{}, fmt.Errorf("failed to extract envelope info")
+	}
+
+	// Парсим тело сообщения и вложения
+	bodyInfo, err := a.parseMessageBody(imapMsg)
+	if err != nil {
+		return domain.EmailMessage{}, fmt.Errorf("failed to parse message body: %w", err)
+	}
+
+	// Извлекаем все RFC заголовки
+	headers := a.extractAllHeaders(imapMsg)
+
+	// Нормализуем адреса
+	fromAddr, err := a.addressNormalizer.NormalizeEmailAddress(envelopeInfo.From[0])
+	if err != nil {
+		return domain.EmailMessage{}, fmt.Errorf("failed to normalize from address: %w", err)
+	}
+
+	toAddrs := a.addressNormalizer.ConvertToDomainAddresses(envelopeInfo.To)
+	ccAddrs := a.addressNormalizer.ConvertToDomainAddresses(envelopeInfo.CC)
+
+	// Создаем доменное сообщение с полной информацией
+	domainMsg := domain.EmailMessage{
+		MessageID:   envelopeInfo.MessageID,
+		InReplyTo:   envelopeInfo.InReplyTo,
+		References:  envelopeInfo.References,
+		From:        domain.EmailAddress(fromAddr),
+		To:          toAddrs,
+		CC:          ccAddrs,
+		Subject:     envelopeInfo.Subject,
+		BodyText:    bodyInfo.Text,
+		BodyHTML:    bodyInfo.HTML,
+		Attachments: bodyInfo.Attachments,
+		Direction:   domain.DirectionIncoming,
+		Source:      "imap",
+		Headers:     headers,
+		CreatedAt:   envelopeInfo.Date,
+		UpdatedAt:   time.Now(),
+	}
+
+	return domainMsg, nil
+}
+
+// parseMessageBody парсит тело сообщения и вложения
+func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo, error) {
+	bodyInfo := &MessageBodyInfo{
+		Text:        "",
+		HTML:        "",
+		Attachments: []domain.Attachment{},
+	}
+
+	if imapMsg.Body == nil {
+		return bodyInfo, nil
+	}
+
+	// Для полного парсинга нам нужно получить сырое сообщение
+	// Временно возвращаем базовую информацию
+	// Полный MIME парсинг будет реализован в отдельном методе
+	return bodyInfo, nil
+}
+
+// extractAllHeaders извлекает все RFC заголовки из IMAP сообщения
+func (a *IMAPAdapter) extractAllHeaders(imapMsg *imap.Message) map[string][]string {
+	headers := make(map[string][]string)
+
+	if imapMsg.Body == nil {
+		return headers
+	}
+
+	// Временная реализация - извлекаем базовые заголовки из envelope
+	// Полный парсинг заголовков будет в MIME парсере
+	envelopeInfo := imapclient.GetMessageEnvelopeInfo(imapMsg)
+	if envelopeInfo != nil {
+		headers["From"] = envelopeInfo.From
+		headers["To"] = envelopeInfo.To
+		headers["Cc"] = envelopeInfo.CC
+		headers["Subject"] = []string{envelopeInfo.Subject}
+		headers["Message-ID"] = []string{envelopeInfo.MessageID}
+		headers["Date"] = []string{envelopeInfo.Date.Format(time.RFC1123Z)}
+
+		if envelopeInfo.InReplyTo != "" {
+			headers["In-Reply-To"] = []string{envelopeInfo.InReplyTo}
+		}
+	}
+
+	return headers
+}
+
+// parseMultipartMessage парсит multipart сообщение
+func (a *IMAPAdapter) parseMultipartMessage(imapMsg *imap.Message, structure *imap.BodyStructure) (*MessageBodyInfo, error) {
+	// Временная заглушка - полная реализация будет в MIME парсере
+	return &MessageBodyInfo{
+		Text:        "",
+		HTML:        "",
+		Attachments: []domain.Attachment{},
+	}, nil
+}
+
+// parseSimpleMessage парсит простое сообщение
+func (a *IMAPAdapter) parseSimpleMessage(imapMsg *imap.Message, structure *imap.BodyStructure) (*MessageBodyInfo, error) {
+	// Временная заглушка - полная реализация будет в MIME парсере
+	return &MessageBodyInfo{
+		Text:        "",
+		HTML:        "",
+		Attachments: []domain.Attachment{},
+	}, nil
 }
 
 // extractPrimaryAddress извлекает основной адрес из списка
