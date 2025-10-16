@@ -8,9 +8,9 @@ import (
 )
 
 // HealthChecker общий интерфейс для проверки здоровья сервисов
-type HealthChecker interface {
-	HealthCheck(ctx context.Context) error
-}
+// type HealthChecker interface {
+// 	HealthCheck(ctx context.Context) error
+// }
 
 // Logger интерфейс для логирования
 type Logger interface {

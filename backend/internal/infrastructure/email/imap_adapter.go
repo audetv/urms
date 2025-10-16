@@ -25,6 +25,7 @@ type IMAPAdapter struct {
 	config            *imapclient.Config
 	mimeParser        *MIMEParser
 	addressNormalizer *AddressNormalizer
+	retryManager      *RetryManager
 }
 
 // NewIMAPAdapter создает новый IMAP адаптер
@@ -34,12 +35,21 @@ func NewIMAPAdapter(config *imapclient.Config) *IMAPAdapter {
 		config:            config,
 		mimeParser:        NewMIMEParser(),
 		addressNormalizer: NewAddressNormalizer(),
+		retryManager:      NewRetryManager(DefaultRetryConfig()), // ✅ Используем дефолтную конфиг
 	}
 }
 
 // Connect устанавливает соединение с IMAP сервером
 func (a *IMAPAdapter) Connect(ctx context.Context) error {
-	return a.client.Connect()
+	operation := "IMAP connect"
+
+	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		err := a.client.Connect()
+		if err != nil {
+			return NewIMAPError("connect", IMAPErrorConnection, "failed to connect to IMAP server", err)
+		}
+		return nil
+	})
 }
 
 // Disconnect закрывает соединение
@@ -47,16 +57,41 @@ func (a *IMAPAdapter) Disconnect() error {
 	return a.client.Logout()
 }
 
-// HealthCheck проверяет состояние соединения
+// HealthCheck с retry проверяет состояние соединения
 func (a *IMAPAdapter) HealthCheck(ctx context.Context) error {
-	return a.client.CheckConnection()
+	operation := "IMAP health check"
+
+	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		err := a.client.CheckConnection()
+		if err != nil {
+			return NewIMAPError("health_check", IMAPErrorConnection, "health check failed", err)
+		}
+		return nil
+	})
 }
 
-// FetchMessages получает сообщения по критериям
+// FetchMessages с retry получает сообщения по критериям
 func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	operation := "IMAP fetch messages"
+	var messages []domain.EmailMessage
+
+	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		fetchedMessages, err := a.fetchMessagesInternal(ctx, criteria)
+		if err != nil {
+			return err
+		}
+		messages = fetchedMessages
+		return nil
+	})
+
+	return messages, err
+}
+
+// fetchMessagesInternal - внутренний метод без retry для использования в retry цикле
+func (a *IMAPAdapter) fetchMessagesInternal(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
 	// ВЫБИРАЕМ почтовый ящик перед поиском
 	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
-		return nil, fmt.Errorf("failed to select mailbox %s: %w", criteria.Mailbox, err)
+		return nil, NewIMAPError("select_mailbox", IMAPErrorServer, fmt.Sprintf("failed to select mailbox %s", criteria.Mailbox), err)
 	}
 
 	// Конвертируем доменные критерии в IMAP-специфичные
@@ -65,7 +100,7 @@ func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCri
 	// Ищем сообщения по UID
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
-		return nil, fmt.Errorf("failed to search messages: %w", err)
+		return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search messages", err)
 	}
 
 	if len(messageUIDs) == 0 {
@@ -82,7 +117,7 @@ func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCri
 	fetchItems := imapclient.CreateFetchItems(false) // Без тела для начала
 	messagesChan, err := a.client.FetchMessages(seqSet, fetchItems)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch messages: %w", err)
+		return nil, NewIMAPError("fetch_messages", IMAPErrorProtocol, "failed to fetch messages", err)
 	}
 
 	// Конвертируем IMAP сообщения в доменные сущности
@@ -161,24 +196,39 @@ func (a *IMAPAdapter) MarkAsProcessed(ctx context.Context, messageIDs []string) 
 	return nil
 }
 
-// ListMailboxes возвращает список почтовых ящиков
+// ListMailboxes с retry возвращает список почтовых ящиков
 func (a *IMAPAdapter) ListMailboxes(ctx context.Context) ([]ports.MailboxInfo, error) {
-	// TODO: Реализовать получение списка почтовых ящиков
-	// Пока возвращаем только INBOX
-	return []ports.MailboxInfo{
-		{
-			Name:     "INBOX",
-			Messages: 0, // Можно получить через GetMailboxInfo
-			Unseen:   0,
-			Recent:   0,
-		},
-	}, nil
+	operation := "IMAP list mailboxes"
+	var mailboxes []ports.MailboxInfo
+
+	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		// TODO: Реализовать получение списка почтовых ящиков
+		// Пока возвращаем только INBOX
+		mailboxes = []ports.MailboxInfo{
+			{
+				Name:     "INBOX",
+				Messages: 0,
+				Unseen:   0,
+				Recent:   0,
+			},
+		}
+		return nil
+	})
+
+	return mailboxes, err
 }
 
-// SelectMailbox выбирает почтовый ящик
+// SelectMailbox с retry выбирает почтовый ящик
 func (a *IMAPAdapter) SelectMailbox(ctx context.Context, name string) error {
-	_, err := a.client.SelectMailbox(name, a.config.ReadOnly)
-	return err
+	operation := fmt.Sprintf("IMAP select mailbox %s", name)
+
+	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		_, err := a.client.SelectMailbox(name, a.config.ReadOnly)
+		if err != nil {
+			return NewIMAPError("select_mailbox", IMAPErrorServer, fmt.Sprintf("failed to select mailbox %s", name), err)
+		}
+		return nil
+	})
 }
 
 // GetMailboxInfo возвращает информацию о почтовом ящике

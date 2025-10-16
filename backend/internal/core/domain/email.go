@@ -19,13 +19,6 @@ const (
 	DirectionOutgoing Direction = "outgoing"
 )
 
-// Domain Errors для Email домена
-var (
-	ErrInvalidEmailAddress = errors.New("invalid email address")
-	ErrEmptySubject        = errors.New("email subject cannot be empty")
-	ErrMessageTooLarge     = errors.New("email message size exceeds limit")
-)
-
 // EmailMessage - доменная сущность для email сообщений
 type EmailMessage struct {
 	ID         MessageID
