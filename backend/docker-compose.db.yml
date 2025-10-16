@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: urms-postgres
+    environment:
+      POSTGRES_DB: urms
+      POSTGRES_USER: urms
+      POSTGRES_PASSWORD: urms
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U urms -d urms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - urms-network
+
+  # Для будущего использования - Redis
+  redis:
+    image: redis:8-alpine
+    container_name: urms-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - urms-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  urms-network:
+    driver: bridge

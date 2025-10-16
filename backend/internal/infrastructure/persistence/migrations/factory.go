@@ -15,8 +15,10 @@ func NewMigrationGateway(provider ports.MigrationProviderType, db *sql.DB) (port
 	case ports.PostgreSQLProvider:
 		return NewPostgresMigrator(db)
 	case ports.MySQLProvider:
+		// return NewMySQLMigrator(db) - когда реализуем
 		return nil, fmt.Errorf("MySQL migrations not implemented yet")
 	case ports.SQLiteProvider:
+		// return NewSQLiteMigrator(db) - когда реализуем
 		return nil, fmt.Errorf("SQLite migrations not implemented yet")
 	default:
 		return nil, fmt.Errorf("unsupported database provider: %s", provider)

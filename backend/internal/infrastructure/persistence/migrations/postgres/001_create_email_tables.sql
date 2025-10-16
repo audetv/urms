@@ -1,10 +1,5 @@
--- backend/internal/infrastructure/persistence/migrations/001_create_email_tables.sql
-
--- Migration: 001_create_email_tables
--- Description: Create email_messages and email_attachments tables
--- Created at: 2025-10-15
-
-BEGIN;
+-- backend/internal/infrastructure/persistence/migrations/postgres/001_create_email_tables.sql
+-- Убираем BEGIN/COMMIT - теперь этим управляет Go код
 
 -- Таблица для email сообщений
 CREATE TABLE IF NOT EXISTS email_messages (
@@ -29,6 +24,10 @@ CREATE TABLE IF NOT EXISTS email_messages (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
+-- Создаем UNIQUE constraint
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_messages_message_id_unique 
+    ON email_messages(message_id);
+
 -- Таблица для вложений
 CREATE TABLE IF NOT EXISTS email_attachments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -45,5 +44,3 @@ CREATE TABLE IF NOT EXISTS email_attachments (
         REFERENCES email_messages(message_id) 
         ON DELETE CASCADE
 );
-
-COMMIT;

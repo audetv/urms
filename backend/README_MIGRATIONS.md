@@ -1,53 +1,85 @@
-## Database Migrations
+# URMS Database Migrations
 
-### Architecture
-- **Port**: `core/ports/migration_gateway.go`
-- **Implementation**: `infrastructure/persistence/migrations/`
-- **CLI**: `cmd/migrate/main.go`
+## Overview
+Database migration system for URMS-OS following Hexagonal Architecture principles.
 
-### Quick Start
+**Current Provider**: PostgreSQL  
+**Architecture**: Supports multiple databases via ports/interfaces
 
-1. Set environment variable:
+## Quick Start
+
+### Option 1: PostgreSQL with Docker (Recommended for Development)
+
 ```bash
-export URMS_DATABASE_DSN="postgres://user:pass@localhost:5432/urms?sslmode=disable"
+# Start PostgreSQL container
+docker run -d \
+  --name urms-postgres \
+  -e POSTGRES_DB=urms \
+  -e POSTGRES_USER=urms \
+  -e POSTGRES_PASSWORD=urms \
+  -p 5432:5432 \
+  postgres:15
+
+# Set environment
+export URMS_DATABASE_DSN="postgres://urms:urms@localhost:5432/urms?sslmode=disable"
 ```
 
-2. Apply migrations:
+### Option 2: Native PostgreSQL Installation
+
+```bash
+# Install PostgreSQL (Ubuntu/Debian)
+sudo apt update && sudo apt install postgresql postgresql-contrib
+
+# Create database and user
+sudo -u postgres psql -c "CREATE DATABASE urms;"
+sudo -u postgres psql -c "CREATE USER urms WITH PASSWORD 'urms';"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE urms TO urms;"
+
+# Set environment
+export URMS_DATABASE_DSN="postgres://urms:urms@localhost:5432/urms?sslmode=disable"
+```
+
+### Apply Migrations
 ```bash
 # Using Makefile
 make migrate
 
-# Using Go directly
+# Using Go directly  
 go run cmd/migrate/main.go -dsn "$URMS_DATABASE_DSN" -cmd up
 ```
 
-3. Check status:
-```bash
-make migrate-status
+## Docker Compose для разработки
+
+Создаем `docker-compose.yml` для удобства:
+
+```yaml
+# backend/docker-compose.db.yml
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: urms
+      POSTGRES_USER: urms
+      POSTGRES_PASSWORD: urms
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U urms -d urms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
 ```
 
-### Available Commands
-
-- `up` - Apply all pending migrations
-- `status` - Show migration status
-- `create` - Create new migration template
-
-### Provider Support
-
-- ✅ PostgreSQL
-- 🔄 MySQL (planned)
-- 🔄 SQLite (planned)
-
-## 🚀 Тестируем миграции
-
+Использование:
 ```bash
-# Создаем тестовую БД (если еще не создана)
-createdb urms
+# Запуск БД
+docker compose -f docker-compose.db.yml up -d
 
-# Запускаем миграции
-cd backend
-make migrate
-
-# Проверяем статус
-make migrate-status
+# Остановка
+docker compose -f docker-compose.db.yml down
 ```

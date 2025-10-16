@@ -1,33 +1,42 @@
 # backend/Makefile
 
-.PHONY: migrate migrate-status migrate-create test
+.PHONY: db-up db-down db-logs migrate migrate-status test
+
+# Database
+db-up:
+	@echo "🐘 Starting PostgreSQL database..."
+	@docker compose -f docker-compose.db.yml up -d
+
+db-down:
+	@echo "🛑 Stopping database..."
+	@docker compose -f docker-compose.db.yml down
+
+db-logs:
+	@docker compose -f docker-compose.db.yml logs -f
 
 # Environment
 export URMS_DATABASE_DSN ?= postgres://urms:urms@localhost:5432/urms?sslmode=disable
 
-# Миграции
-migrate:
-	@echo "🚀 Applying database migrations..."
+# Migrations
+migrate: db-up
+	@echo "🚀 Waiting for database to be ready..."
+	@sleep 3
+	@echo "Applying database migrations..."
 	@go run cmd/migrate/main.go -dsn "$(URMS_DATABASE_DSN)" -cmd up
 
 migrate-status:
-	@echo "📊 Checking migration status..."
 	@go run cmd/migrate/main.go -dsn "$(URMS_DATABASE_DSN)" -cmd status
 
-migrate-create:
-	@if [ -z "$(name)" ]; then \
-		echo "❌ Usage: make migrate-create name=<migration_name>"; \
-		exit 1; \
-	fi
-	@go run cmd/migrate/main.go -dsn "$(URMS_DATABASE_DSN)" -cmd create -name "$(name)"
+# Development
+dev-setup: db-up migrate
+	@echo "✅ Development environment setup complete"
 
-# Тесты
+dev-clean: db-down
+	@echo "🧹 Development environment cleaned up"
+
+# Tests
 test:
 	@go test ./... -v
 
 test-short:
 	@go test ./... -v -short
-
-# Development
-dev-setup: migrate
-	@echo "✅ Development environment setup complete"

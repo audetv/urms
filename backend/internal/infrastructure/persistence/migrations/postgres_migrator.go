@@ -24,6 +24,8 @@ type PostgresMigrator struct {
 	db           *sql.DB
 	migrations   []migration
 	migrationsFS ports.MigrationFileSystem
+	analyzer     *SQLAnalyzer
+	txManager    *PostgresTransactionManager
 }
 
 type migration struct {
@@ -37,6 +39,8 @@ func NewPostgresMigrator(db *sql.DB) (ports.MigrationGateway, error) {
 	migrator := &PostgresMigrator{
 		db:           db,
 		migrationsFS: &postgresMigrationFS{},
+		analyzer:     NewSQLAnalyzer(ports.PostgreSQLProvider),
+		txManager:    NewPostgresTransactionManager(db),
 	}
 
 	if err := migrator.loadMigrations(); err != nil {
@@ -44,6 +48,16 @@ func NewPostgresMigrator(db *sql.DB) (ports.MigrationGateway, error) {
 	}
 
 	return migrator, nil
+}
+
+// Добавляем метод для информации о провайдере
+func (m *PostgresMigrator) GetProviderInfo() ports.ProviderInfo {
+	return ports.ProviderInfo{
+		Name:                    ports.PostgreSQLProvider,
+		SupportsDDLTransactions: true,
+		TransactionMode:         ports.TransactionModeFull,
+		Description:             "PostgreSQL with full transaction support for DDL operations",
+	}
 }
 
 // Migrate применяет все непримененные миграции
@@ -65,24 +79,25 @@ func (m *PostgresMigrator) Migrate(ctx context.Context) error {
 
 		log.Printf("Applying migration %s (%s)...", migration.version, migration.name)
 
-		tx, err := m.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("failed to begin transaction: %w", err)
+		// Анализируем миграцию для определения стратегии
+		analysis := m.analyzer.AnalyzeMigration(migration.content)
+
+		// Логируем предупреждения
+		for _, warning := range analysis.Warnings {
+			log.Printf("⚠️  Warning for migration %s: %s", migration.version, warning)
 		}
 
-		if _, err := tx.ExecContext(ctx, migration.content); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to execute migration %s: %w", migration.version, err)
+		var applyErr error
+		if analysis.UseTransaction {
+			log.Printf("  Using transaction: %s", analysis.Reason)
+			applyErr = m.applyMigrationWithTransaction(ctx, migration)
+		} else {
+			log.Printf("  No transaction: %s", analysis.Reason)
+			applyErr = m.applyMigrationWithoutTransaction(ctx, migration)
 		}
 
-		insertQuery := `INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3)`
-		if _, err := tx.ExecContext(ctx, insertQuery, migration.version, migration.name, time.Now().UTC()); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to record migration %s: %w", migration.version, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit migration %s: %w", migration.version, err)
+		if applyErr != nil {
+			return applyErr
 		}
 
 		log.Printf("Migration %s (%s) applied successfully", migration.version, migration.name)
@@ -139,6 +154,31 @@ func (m *PostgresMigrator) createMigrationsTable(ctx context.Context) error {
 	`
 	_, err := m.db.ExecContext(ctx, query)
 	return err
+}
+
+// shouldUseTransaction определяет, нужно ли использовать транзакцию
+func (m *PostgresMigrator) shouldUseTransaction(sql string) bool {
+	// Не используем транзакции для операций, которые их не поддерживают
+	forbiddenPatterns := []string{
+		"CREATE INDEX CONCURRENTLY",
+		"REINDEX",
+		"VACUUM",
+	}
+
+	upperSQL := strings.ToUpper(sql)
+	for _, pattern := range forbiddenPatterns {
+		if strings.Contains(upperSQL, pattern) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Обновляем applyMigrationWithTransaction
+func (m *PostgresMigrator) applyMigrationWithTransaction(ctx context.Context, migration migration) error {
+	// Используем безопасный транзакционный менеджер
+	return m.txManager.ExecuteWithRecord(ctx, migration)
 }
 
 // getAppliedMigrations возвращает карту примененных миграций
@@ -282,4 +322,33 @@ func (fs *postgresMigrationFS) ListMigrations() ([]ports.MigrationFile, error) {
 	}
 
 	return files, nil
+}
+
+// applyMigrationWithoutTransaction применяет миграцию без транзакции
+func (m *PostgresMigrator) applyMigrationWithoutTransaction(ctx context.Context, migration migration) error {
+	log.Printf("  Executing migration without transaction safety")
+
+	// Выполняем миграцию без транзакции
+	if _, err := m.db.ExecContext(ctx, migration.content); err != nil {
+		return fmt.Errorf("failed to execute migration %s: %w", migration.version, err)
+	}
+
+	// Записываем факт миграции в отдельной транзакции для безопасности
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin record transaction: %w", err)
+	}
+
+	insertQuery := `INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3)`
+	if _, err := tx.ExecContext(ctx, insertQuery, migration.version, migration.name, time.Now().UTC()); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to record migration %s: %w", migration.version, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migration record %s: %w", migration.version, err)
+	}
+
+	log.Printf("  ✅ Migration %s recorded successfully", migration.version)
+	return nil
 }

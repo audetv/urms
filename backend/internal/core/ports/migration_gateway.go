@@ -16,7 +16,41 @@ type MigrationGateway interface {
 
 	// CreateMigration создает новую миграцию (для разработки)
 	CreateMigration(ctx context.Context, name string) error
+
+	// GetProviderInfo возвращает информацию о провайдере БД
+	GetProviderInfo() ProviderInfo
 }
+
+// ProviderInfo содержит информацию о возможностях провайдера БД
+type ProviderInfo struct {
+	Name                    MigrationProviderType
+	SupportsDDLTransactions bool            // Поддерживает ли DDL в транзакциях
+	TransactionMode         TransactionMode // Рекомендуемый режим транзакций
+	Description             string
+}
+
+// TransactionMode определяет режим работы с транзакциями
+type TransactionMode string
+
+const (
+	TransactionModeFull    TransactionMode = "full"     // Полная поддержка транзакций
+	TransactionModeDDLOnly TransactionMode = "ddl_only" // Только DML транзакции
+	TransactionModeNone    TransactionMode = "none"     // Без транзакций
+)
+
+// MigrationAnalysis анализирует миграцию для определения стратегии выполнения
+type MigrationAnalysis struct {
+	UseTransaction bool
+	Reason         string
+	Warnings       []string
+}
+
+// Добавляем константы для анализа SQL
+const (
+	SQLTypeDDL = "DDL"
+	SQLTypeDML = "DML"
+	SQLTypeDCL = "DCL"
+)
 
 // MigrationStatus представляет статус миграций
 type MigrationStatus struct {
@@ -33,6 +67,12 @@ type MigrationInfo struct {
 	AppliedAt *time.Time
 	Status    string
 }
+
+// const (
+// 	TransactionModeAuto   TransactionMode = "auto"   // Решает мигратор
+// 	TransactionModeAlways TransactionMode = "always" // Всегда использовать транзакции
+// 	TransactionModeNever  TransactionMode = "never"  // Никогда не использовать
+// )
 
 // MigrationProviderType тип провайдера БД
 type MigrationProviderType string

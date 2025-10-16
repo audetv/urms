@@ -1,4 +1,4 @@
--- backend/internal/infrastructure/persistence/migrations/002_add_email_indexes.sql
+-- backend/internal/infrastructure/persistence/migrations/postgres/002_add_email_indexes.sql
 
 -- Migration: 002_add_email_indexes  
 -- Description: Add performance indexes for email queries
@@ -6,10 +6,8 @@
 
 BEGIN;
 
--- Индексы для оптимизации запросов
-CREATE UNIQUE INDEX IF NOT EXISTS idx_email_messages_message_id 
-    ON email_messages(message_id);
-
+-- Убираем CREATE UNIQUE INDEX т.к. он уже создан в первой миграции
+-- Остальные индексы оставляем
 CREATE INDEX IF NOT EXISTS idx_email_messages_in_reply_to 
     ON email_messages(in_reply_to) 
     WHERE in_reply_to IS NOT NULL;
@@ -35,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_email_messages_from_email
 CREATE INDEX IF NOT EXISTS idx_email_attachments_message_id 
     ON email_attachments(message_id);
 
--- Функция для автоматического обновления updated_at
+-- Функция и триггер оставляем без изменений
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -44,7 +42,6 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Триггер для автоматического обновления updated_at
 CREATE TRIGGER update_email_messages_updated_at 
     BEFORE UPDATE ON email_messages 
     FOR EACH ROW 
