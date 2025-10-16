@@ -196,5 +196,24 @@ func (s *TicketService) Process(ticket *Ticket) error {
 }
 ```
 
+## 🚨 Performance & Scalability Considerations
+
+### Email Module - Large Mailbox Handling
+**Issue:** IMAP операции могут зависать на почтовых ящиках с 2500+ сообщений
+**Solution Pattern:**
+- Использовать таймауты для всех внешних операций
+- Реализовать пагинацию для больших наборов данных
+- Добавлять прогресс-логгирование для длительных операций
+- Использовать context для cancellation
+
+**Implementation:**
+```go
+type IMAPConfig struct {
+    OperationTimeout time.Duration `yaml:"operation_timeout"`
+    PageSize        int           `yaml:"page_size"`
+    MaxMessages     int           `yaml:"max_messages"`
+}
+```
+
 **Maintainer**: URMS-OS Architecture Committee  
 **Last Updated**: ${current_date}
