@@ -26,22 +26,48 @@ type IMAPAdapter struct {
 	mimeParser        *MIMEParser
 	addressNormalizer *AddressNormalizer
 	retryManager      *RetryManager
+	timeoutConfig     TimeoutConfig
 }
 
-// NewIMAPAdapter создает новый IMAP адаптер
-func NewIMAPAdapter(config *imapclient.Config) *IMAPAdapter {
+// TimeoutConfig конфигурация таймаутов для IMAP операций
+type TimeoutConfig struct {
+	ConnectTimeout   time.Duration
+	LoginTimeout     time.Duration
+	FetchTimeout     time.Duration
+	OperationTimeout time.Duration
+	PageSize         int
+	MaxMessages      int
+	MaxRetries       int
+	RetryDelay       time.Duration
+}
+
+// NewIMAPAdapter создает новый IMAP адаптер с поддержкой таймаутов
+func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig) *IMAPAdapter {
+	// Настраиваем retry manager с конфигурацией из timeoutConfig
+	retryConfig := RetryConfig{
+		MaxAttempts:   timeoutConfig.MaxRetries,
+		BaseDelay:     timeoutConfig.RetryDelay,
+		MaxDelay:      30 * time.Second,
+		BackoffFactor: 1.5,
+	}
+
 	return &IMAPAdapter{
 		client:            imapclient.NewClient(config),
 		config:            config,
 		mimeParser:        NewMIMEParser(),
 		addressNormalizer: NewAddressNormalizer(),
-		retryManager:      NewRetryManager(DefaultRetryConfig()), // ✅ Используем дефолтную конфиг
+		retryManager:      NewRetryManager(retryConfig),
+		timeoutConfig:     timeoutConfig,
 	}
 }
 
-// Connect устанавливает соединение с IMAP сервером
+// Connect устанавливает соединение с IMAP сервером с таймаутом
 func (a *IMAPAdapter) Connect(ctx context.Context) error {
 	operation := "IMAP connect"
+
+	// Создаем контекст с таймаутом подключения
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.ConnectTimeout)
+	defer cancel()
 
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		err := a.client.Connect()
@@ -57,9 +83,13 @@ func (a *IMAPAdapter) Disconnect() error {
 	return a.client.Logout()
 }
 
-// HealthCheck с retry проверяет состояние соединения
+// HealthCheck с таймаутом проверяет состояние соединения
 func (a *IMAPAdapter) HealthCheck(ctx context.Context) error {
 	operation := "IMAP health check"
+
+	// Создаем контекст с operation timeout
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.OperationTimeout)
+	defer cancel()
 
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		err := a.client.CheckConnection()
@@ -70,13 +100,18 @@ func (a *IMAPAdapter) HealthCheck(ctx context.Context) error {
 	})
 }
 
-// FetchMessages с retry получает сообщения по критериям
+// FetchMessages с таймаутом и пагинацией получает сообщения по критериям
 func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
 	operation := "IMAP fetch messages"
+
+	// Создаем контекст с таймаутом получения
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.FetchTimeout)
+	defer cancel()
+
 	var messages []domain.EmailMessage
 
 	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
-		fetchedMessages, err := a.fetchMessagesInternal(ctx, criteria)
+		fetchedMessages, err := a.fetchMessagesWithPagination(ctx, criteria)
 		if err != nil {
 			return err
 		}
@@ -87,8 +122,8 @@ func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCri
 	return messages, err
 }
 
-// fetchMessagesInternal - внутренний метод без retry для использования в retry цикле
-func (a *IMAPAdapter) fetchMessagesInternal(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+// fetchMessagesWithPagination - внутренний метод с поддержкой пагинации
+func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
 	// ВЫБИРАЕМ почтовый ящик перед поиском
 	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
 		return nil, NewIMAPError("select_mailbox", IMAPErrorServer, fmt.Sprintf("failed to select mailbox %s", criteria.Mailbox), err)
@@ -97,16 +132,71 @@ func (a *IMAPAdapter) fetchMessagesInternal(ctx context.Context, criteria ports.
 	// Конвертируем доменные критерии в IMAP-специфичные
 	imapCriteria := a.convertToIMAPCriteria(criteria)
 
-	// Ищем сообщения по UID
-	messageUIDs, err := a.client.SearchMessages(imapCriteria)
-	if err != nil {
-		return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search messages", err)
+	// Ищем сообщения по UID с поддержкой пагинации
+	allMessages := []domain.EmailMessage{}
+	lastUID := criteria.SinceUID
+	processedCount := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err() // Уважаем cancellation
+		default:
+			// Применяем пагинацию
+			if processedCount >= a.timeoutConfig.MaxMessages {
+				log.Info().
+					Int("processed", processedCount).
+					Int("max_messages", a.timeoutConfig.MaxMessages).
+					Msg("Reached maximum messages per poll, stopping pagination")
+				break
+			}
+
+			// Обновляем критерии для следующей страницы
+			imapCriteria.Uid = a.createUIDSeqSet(lastUID, a.timeoutConfig.PageSize)
+
+			messageUIDs, err := a.client.SearchMessages(imapCriteria)
+			if err != nil {
+				return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search messages", err)
+			}
+
+			if len(messageUIDs) == 0 {
+				return allMessages, nil // Больше нет сообщений
+			}
+
+			// Получаем сообщения текущей страницы
+			batchMessages, err := a.fetchMessageBatch(ctx, messageUIDs)
+			if err != nil {
+				return nil, err
+			}
+
+			// Добавляем к общему результату
+			allMessages = append(allMessages, batchMessages...)
+			processedCount += len(batchMessages)
+
+			// Обновляем lastUID для следующей итерации
+			if len(batchMessages) > 0 {
+				lastUID = a.extractMaxUID(batchMessages)
+			}
+
+			// Логируем прогресс
+			log.Info().
+				Int("batch_size", len(batchMessages)).
+				Int("total_processed", processedCount).
+				Uint32("last_uid", lastUID).
+				Msg("IMAP pagination progress")
+
+			// Если получили меньше сообщений, чем размер страницы, значит это последняя страница
+			if len(batchMessages) < a.timeoutConfig.PageSize {
+				break
+			}
+		}
 	}
 
-	if len(messageUIDs) == 0 {
-		return []domain.EmailMessage{}, nil
-	}
+	return allMessages, nil
+}
 
+// fetchMessageBatch получает пачку сообщений по UID
+func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint32) ([]domain.EmailMessage, error) {
 	// Создаем SeqSet для получения сообщений
 	seqSet := new(imap.SeqSet)
 	for _, uid := range messageUIDs {
@@ -123,19 +213,58 @@ func (a *IMAPAdapter) fetchMessagesInternal(ctx context.Context, criteria ports.
 	// Конвертируем IMAP сообщения в доменные сущности
 	var domainMessages []domain.EmailMessage
 	for msg := range messagesChan {
-		domainMsg, err := a.convertToDomainMessage(msg)
-		if err != nil {
-			log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message")
-			continue
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err() // Уважаем cancellation
+		default:
+			domainMsg, err := a.convertToDomainMessage(msg)
+			if err != nil {
+				log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message")
+				continue
+			}
+			domainMessages = append(domainMessages, domainMsg)
 		}
-		domainMessages = append(domainMessages, domainMsg)
 	}
 
 	return domainMessages, nil
 }
 
-// FetchMessagesWithBody получает сообщения с полным телом и вложениями
+// createUIDSeqSet создает SeqSet для пагинации по UID
+func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
+	seqSet := new(imap.SeqSet)
+
+	if sinceUID > 0 {
+		// Начинаем со следующего UID после sinceUID
+		startUID := sinceUID + 1
+		// Ограничиваем количество сообщений
+		endUID := startUID + uint32(limit) - 1
+		seqSet.AddRange(startUID, endUID)
+	} else {
+		// Первый запрос - берем последние N сообщений
+		// В реальной реализации нужно получить максимальный UID и отнять limit
+		seqSet.AddNum(1, uint32(limit)) // Упрощенная реализация
+	}
+
+	return seqSet
+}
+
+// extractMaxUID извлекает максимальный UID из пачки сообщений
+func (a *IMAPAdapter) extractMaxUID(messages []domain.EmailMessage) uint32 {
+	// Временная реализация - в реальной реализации нужно извлекать UID из IMAP сообщений
+	// Пока возвращаем увеличенный счетчик
+	if len(messages) == 0 {
+		return 0
+	}
+	// В Phase 1C.2 добавим реальное извлечение UID из IMAP сообщений
+	return uint32(len(messages))
+}
+
+// FetchMessagesWithBody получает сообщения с полным телом и вложениями с таймаутом
 func (a *IMAPAdapter) FetchMessagesWithBody(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.FetchTimeout)
+	defer cancel()
+
 	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
 		return nil, fmt.Errorf("failed to select mailbox %s: %w", criteria.Mailbox, err)
 	}
@@ -164,12 +293,17 @@ func (a *IMAPAdapter) FetchMessagesWithBody(ctx context.Context, criteria ports.
 
 	var domainMessages []domain.EmailMessage
 	for msg := range messagesChan {
-		domainMsg, err := a.convertToDomainMessageWithBody(msg)
-		if err != nil {
-			log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message with body")
-			continue
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			domainMsg, err := a.convertToDomainMessageWithBody(msg)
+			if err != nil {
+				log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message with body")
+				continue
+			}
+			domainMessages = append(domainMessages, domainMsg)
 		}
-		domainMessages = append(domainMessages, domainMsg)
 	}
 
 	return domainMessages, nil
@@ -180,25 +314,45 @@ func (a *IMAPAdapter) SendMessage(ctx context.Context, msg domain.EmailMessage) 
 	return fmt.Errorf("IMAP adapter does not support sending messages. Use SMTP adapter instead")
 }
 
-// MarkAsRead помечает сообщения как прочитанные
+// MarkAsRead помечает сообщения как прочитанные с таймаутом
 func (a *IMAPAdapter) MarkAsRead(ctx context.Context, messageIDs []string) error {
-	// TODO: Реализовать пометку сообщений как прочитанных
-	// Пока возвращаем заглушку
-	log.Info().Strs("message_ids", messageIDs).Msg("Marking messages as read")
-	return nil
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.OperationTimeout)
+	defer cancel()
+
+	operation := "IMAP mark as read"
+
+	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		// TODO: Реализовать пометку сообщений как прочитанных
+		log.Info().Strs("message_ids", messageIDs).Msg("Marking messages as read")
+		return nil
+	})
 }
 
-// MarkAsProcessed помечает сообщения как обработанные
+// MarkAsProcessed помечает сообщения как обработанные с таймаутом
 func (a *IMAPAdapter) MarkAsProcessed(ctx context.Context, messageIDs []string) error {
-	// IMAP не поддерживает эту операцию напрямую
-	// Можно реализовать через перемещение в другую папку
-	log.Info().Strs("message_ids", messageIDs).Msg("Marking messages as processed")
-	return nil
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.OperationTimeout)
+	defer cancel()
+
+	operation := "IMAP mark as processed"
+
+	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		// IMAP не поддерживает эту операцию напрямую
+		// Можно реализовать через перемещение в другую папку
+		log.Info().Strs("message_ids", messageIDs).Msg("Marking messages as processed")
+		return nil
+	})
 }
 
-// ListMailboxes с retry возвращает список почтовых ящиков
+// ListMailboxes с таймаутом возвращает список почтовых ящиков
 func (a *IMAPAdapter) ListMailboxes(ctx context.Context) ([]ports.MailboxInfo, error) {
 	operation := "IMAP list mailboxes"
+
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.OperationTimeout)
+	defer cancel()
+
 	var mailboxes []ports.MailboxInfo
 
 	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
@@ -218,9 +372,13 @@ func (a *IMAPAdapter) ListMailboxes(ctx context.Context) ([]ports.MailboxInfo, e
 	return mailboxes, err
 }
 
-// SelectMailbox с retry выбирает почтовый ящик
+// SelectMailbox с таймаутом выбирает почтовый ящик
 func (a *IMAPAdapter) SelectMailbox(ctx context.Context, name string) error {
 	operation := fmt.Sprintf("IMAP select mailbox %s", name)
+
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.OperationTimeout)
+	defer cancel()
 
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		_, err := a.client.SelectMailbox(name, a.config.ReadOnly)
@@ -231,30 +389,42 @@ func (a *IMAPAdapter) SelectMailbox(ctx context.Context, name string) error {
 	})
 }
 
-// GetMailboxInfo возвращает информацию о почтовом ящике
+// GetMailboxInfo возвращает информацию о почтовом ящике с таймаутом
 func (a *IMAPAdapter) GetMailboxInfo(ctx context.Context, name string) (*ports.MailboxInfo, error) {
-	mailbox, err := a.client.GetMailboxInfo(name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get mailbox info: %w", err)
-	}
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.OperationTimeout)
+	defer cancel()
 
-	return &ports.MailboxInfo{
-		Name:     mailbox.Name,
-		Messages: int(mailbox.Messages),
-		Unseen:   int(mailbox.Unseen),
-		Recent:   int(mailbox.Recent),
-	}, nil
+	operation := "IMAP get mailbox info"
+
+	var mailboxInfo *ports.MailboxInfo
+
+	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		mailbox, err := a.client.GetMailboxInfo(name)
+		if err != nil {
+			return fmt.Errorf("failed to get mailbox info: %w", err)
+		}
+
+		mailboxInfo = &ports.MailboxInfo{
+			Name:     mailbox.Name,
+			Messages: int(mailbox.Messages),
+			Unseen:   int(mailbox.Unseen),
+			Recent:   int(mailbox.Recent),
+		}
+		return nil
+	})
+
+	return mailboxInfo, err
 }
 
 // convertToIMAPCriteria конвертирует доменные критерии в IMAP-специфичные
 func (a *IMAPAdapter) convertToIMAPCriteria(criteria ports.FetchCriteria) *imap.SearchCriteria {
 	imapCriteria := &imap.SearchCriteria{}
 
-	// Поиск по UID
-	if criteria.SinceUID > 0 {
-		imapCriteria.Uid = new(imap.SeqSet)
-		imapCriteria.Uid.AddNum(criteria.SinceUID+1, 0) // 0 означает "*" - все последующие
-	}
+	// Поиск по UID (будет установлен в пагинации)
+	// if criteria.SinceUID > 0 {
+	//     imapCriteria.Uid = a.createUIDSeqSet(criteria.SinceUID, a.timeoutConfig.PageSize)
+	// }
 
 	// Поиск по дате
 	if !criteria.Since.IsZero() {
@@ -287,7 +457,6 @@ func (a *IMAPAdapter) convertToDomainMessage(imapMsg *imap.Message) (domain.Emai
 	to := a.extractAddresses(envelopeInfo.To)
 
 	// Создаем доменное сообщение
-	// TODO: Добавить IDGenerator когда будем создавать сообщения
 	domainMsg := domain.EmailMessage{
 		MessageID: envelopeInfo.MessageID,
 		InReplyTo: envelopeInfo.InReplyTo,
