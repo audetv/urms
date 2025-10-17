@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
@@ -166,6 +167,18 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 		return nil, NewIMAPError("select_mailbox", IMAPErrorServer, fmt.Sprintf("failed to select mailbox %s", criteria.Mailbox), err)
 	}
 
+	log.Info().
+		Str("mailbox", criteria.Mailbox).
+		Uint32("since_uid", criteria.SinceUID).
+		Time("since", criteria.Since).
+		Int("page_size", a.timeoutConfig.PageSize).
+		Msg("Starting IMAP pagination")
+
+		// ✅ ИСПРАВЛЕНО: Для первого запуска используем альтернативный подход
+	if criteria.SinceUID == 0 {
+		return a.fetchInitialMessages(ctx, criteria)
+	}
+
 	// Конвертируем доменные критерии в IMAP-специфичные
 	imapCriteria := a.convertToIMAPCriteria(criteria)
 
@@ -174,6 +187,7 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	lastUID := criteria.SinceUID
 	processedCount := 0
 	hasMoreMessages := true
+	pageNumber := 1
 
 	for hasMoreMessages {
 		select {
@@ -193,13 +207,27 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			// Обновляем критерии для следующей страницы
 			imapCriteria.Uid = a.createUIDSeqSet(lastUID, a.timeoutConfig.PageSize)
 
+			log.Debug().
+				Int("page", pageNumber).
+				Uint32("last_uid", lastUID).
+				Msg("Searching for messages with UID criteria")
+
 			messageUIDs, err := a.client.SearchMessages(imapCriteria)
 			if err != nil {
 				return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search messages", err)
 			}
 
+			log.Debug().
+				Int("page", pageNumber).
+				Int("found_uids", len(messageUIDs)).
+				Msg("IMAP search results")
+
 			if len(messageUIDs) == 0 {
 				// Больше нет сообщений
+				log.Info().
+					Int("total_pages", pageNumber).
+					Int("total_messages", len(allMessages)).
+					Msg("No more messages found, ending pagination")
 				hasMoreMessages = false
 				break
 			}
@@ -221,6 +249,7 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 
 			// Логируем прогресс
 			log.Info().
+				Int("page", pageNumber).
 				Int("batch_size", len(batchMessages)).
 				Int("total_processed", processedCount).
 				Uint32("last_uid", lastUID).
@@ -229,9 +258,20 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			// Если получили меньше сообщений, чем размер страницы, значит это последняя страница
 			if len(batchMessages) < a.timeoutConfig.PageSize {
 				hasMoreMessages = false
+				log.Info().
+					Int("final_page", pageNumber).
+					Int("total_messages", len(allMessages)).
+					Msg("Reached last page of messages")
 			}
+
+			pageNumber++
 		}
 	}
+
+	log.Info().
+		Int("total_messages", len(allMessages)).
+		Int("total_pages", pageNumber-1).
+		Msg("IMAP pagination completed")
 
 	return allMessages, nil
 }
@@ -270,6 +310,54 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 	return domainMessages, nil
 }
 
+// fetchInitialMessages получает сообщения для первого запуска (без UID)
+func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	log.Info().Msg("Performing initial message fetch without UID tracking")
+
+	// Используем поиск по дате и статусу
+	imapCriteria := &imap.SearchCriteria{}
+
+	// Непрочитанные сообщения
+	if criteria.UnseenOnly {
+		imapCriteria.WithoutFlags = []string{imap.SeenFlag}
+	}
+
+	// Ограничение по дате
+	if !criteria.Since.IsZero() {
+		imapCriteria.Since = criteria.Since
+	} else {
+		imapCriteria.Since = time.Now().Add(-24 * time.Hour) // Последние 24 часа
+	}
+
+	// Ограничиваем количество сообщений
+	imapCriteria.Since = time.Now().Add(-24 * time.Hour)
+
+	messageUIDs, err := a.client.SearchMessages(imapCriteria)
+	if err != nil {
+		return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search initial messages", err)
+	}
+
+	log.Info().
+		Int("found_messages", len(messageUIDs)).
+		Time("since", imapCriteria.Since).
+		Msg("Initial IMAP search completed")
+
+	if len(messageUIDs) == 0 {
+		return []domain.EmailMessage{}, nil
+	}
+
+	// Ограничиваем количество сообщений для первого запуска
+	if len(messageUIDs) > a.timeoutConfig.MaxMessages {
+		messageUIDs = messageUIDs[:a.timeoutConfig.MaxMessages]
+		log.Info().
+			Int("limited_to", a.timeoutConfig.MaxMessages).
+			Msg("Limited initial message fetch")
+	}
+
+	// Получаем сообщения
+	return a.fetchMessageBatch(ctx, messageUIDs)
+}
+
 // createUIDSeqSet создает SeqSet для пагинации по UID
 func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
 	seqSet := new(imap.SeqSet)
@@ -280,10 +368,18 @@ func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
 		// Ограничиваем количество сообщений
 		endUID := startUID + uint32(limit) - 1
 		seqSet.AddRange(startUID, endUID)
+
+		log.Debug().
+			Uint32("start_uid", startUID).
+			Uint32("end_uid", endUID).
+			Int("limit", limit).
+			Msg("Creating UID range for pagination")
 	} else {
-		// Первый запрос - берем последние N сообщений
-		// Используем специальный синтаксис для последних N сообщений
-		seqSet.AddNum(uint32(limit)) // Берем сообщения с UID от 1 до limit
+		// ✅ ИСПРАВЛЕНО: Для первого запроса используем ALL вместо конкретного диапазона
+		// UID будет установлен в convertToIMAPCriteria через дату
+		log.Debug().
+			Msg("Using date-based criteria for initial search, no UID range")
+		// Не устанавливаем UID - используем критерии по дате
 	}
 
 	return seqSet
@@ -295,19 +391,29 @@ func (a *IMAPAdapter) extractMaxUID(messages []domain.EmailMessage) uint32 {
 		return 0
 	}
 
-	// Временная реализация - в реальной реализации нужно извлекать UID из IMAP сообщений
-	// Для тестирования используем простой счетчик
-	// В Phase 1C.2 добавим реальное извлечение UID из IMAP сообщений
 	maxUID := uint32(0)
 	for _, msg := range messages {
-		// Временная логика - используем хэш MessageID для генерации псевдо-UID
-		// В реальной реализации нужно получить UID из IMAP сообщения
-		uidHash := uint32(0)
-		for _, char := range msg.MessageID {
-			uidHash = uidHash*31 + uint32(char)
+		// ✅ ИСПРАВЛЕНО: Извлекаем реальный UID из headers
+		if uidHeaders, exists := msg.Headers["X-IMAP-UID"]; exists && len(uidHeaders) > 0 {
+			if uid, err := strconv.ParseUint(uidHeaders[0], 10, 32); err == nil {
+				if uint32(uid) > maxUID {
+					maxUID = uint32(uid)
+				}
+			}
 		}
-		if uidHash > maxUID {
-			maxUID = uidHash
+	}
+
+	if maxUID == 0 {
+		// Fallback: используем временную логику если UID не найден
+		log.Warn().Msg("No IMAP UID found in messages, using fallback logic")
+		for _, msg := range messages {
+			uidHash := uint32(0)
+			for _, char := range msg.MessageID {
+				uidHash = uidHash*31 + uint32(char)
+			}
+			if uidHash > maxUID {
+				maxUID = uidHash
+			}
 		}
 	}
 
@@ -476,20 +582,31 @@ func (a *IMAPAdapter) GetMailboxInfo(ctx context.Context, name string) (*ports.M
 func (a *IMAPAdapter) convertToIMAPCriteria(criteria ports.FetchCriteria) *imap.SearchCriteria {
 	imapCriteria := &imap.SearchCriteria{}
 
-	// Поиск по UID (будет установлен в пагинации)
-	// if criteria.SinceUID > 0 {
-	//     imapCriteria.Uid = a.createUIDSeqSet(criteria.SinceUID, a.timeoutConfig.PageSize)
-	// }
+	// ✅ ИСПРАВЛЕНО: Для первого запроса (sinceUID=0) ищем все непрочитанные сообщения
+	if criteria.SinceUID == 0 {
+		// Ищем непрочитанные сообщения за последние 24 часа
+		if criteria.UnseenOnly {
+			imapCriteria.WithoutFlags = []string{imap.SeenFlag}
+		}
 
-	// Поиск по дате
-	if !criteria.Since.IsZero() {
-		imapCriteria.Since = criteria.Since
-	}
+		// Ограничиваем поиск по дате если указано
+		if !criteria.Since.IsZero() {
+			imapCriteria.Since = criteria.Since
+		} else {
+			// По умолчанию ищем за последние 7 дней
+			imapCriteria.Since = time.Now().Add(-7 * 24 * time.Hour)
+		}
 
-	// Только непрочитанные
-	if criteria.UnseenOnly {
-		imapCriteria.WithFlags = []string{imap.SeenFlag}
-		imapCriteria.WithoutFlags = []string{imap.SeenFlag}
+		log.Debug().
+			Time("since", imapCriteria.Since).
+			Bool("unseen_only", criteria.UnseenOnly).
+			Msg("Using date-based search for initial polling")
+	} else {
+		// Для последующих запросов используем UID-based поиск
+		// UID будет установлен в пагинации
+		log.Debug().
+			Uint32("since_uid", criteria.SinceUID).
+			Msg("Using UID-based search for pagination")
 	}
 
 	return imapCriteria
@@ -523,6 +640,11 @@ func (a *IMAPAdapter) convertToDomainMessage(imapMsg *imap.Message) (domain.Emai
 		CreatedAt: envelopeInfo.Date,
 		UpdatedAt: time.Now(),
 		Headers:   make(map[string][]string),
+	}
+
+	// ✅ NEW: Сохраняем IMAP UID в headers для отслеживания
+	if imapMsg.Uid > 0 {
+		domainMsg.Headers["X-IMAP-UID"] = []string{fmt.Sprintf("%d", imapMsg.Uid)}
 	}
 
 	// Добавляем References если есть
