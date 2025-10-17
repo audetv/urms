@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -81,7 +82,10 @@ func main() {
 	// Infrastructure layer
 	fmt.Println("🛠️  Initializing dependencies...")
 	imapAdapter := email.NewIMAPAdapter(imapConfig)
-	emailRepo := persistence.NewEmailRepository(persistence.RepositoryTypeInMemory, nil)
+	emailRepo, err := persistence.NewEmailRepository(persistence.RepositoryTypeInMemory, nil)
+	if err != nil {
+		log.Fatalf("❌ Failed to create email repository: %v", err)
+	}
 	idGenerator := id.NewUUIDGenerator()
 
 	// Domain policies
@@ -129,6 +133,10 @@ func main() {
 	}
 	fmt.Println()
 
+	// Создаем context с таймаутом для предотвращения зависания
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // ✅ 10 секунд таймаут
+	defer cancel()
+
 	// Тестируем получение сообщений
 	fmt.Println("📧 Testing message fetching...")
 	criteria := ports.FetchCriteria{
@@ -140,7 +148,11 @@ func main() {
 
 	messages, err := imapAdapter.FetchMessages(ctx, criteria)
 	if err != nil {
-		log.Printf("⚠️  Failed to fetch messages: %v", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("❌ Fetch messages timed out after 10 seconds")
+		} else {
+			log.Printf("⚠️  Failed to fetch messages: %v", err)
+		}
 	} else {
 		fmt.Printf("✅ Successfully fetched %d messages\n", len(messages))
 
