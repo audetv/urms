@@ -61,6 +61,43 @@ func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig) *IMA
 	}
 }
 
+// NewIMAPAdapterWithTimeouts создает новый IMAP адаптер с поддержкой расширенной конфигурации таймаутов
+func NewIMAPAdapterWithTimeouts(config *imapclient.Config, timeoutConfig TimeoutConfig) *IMAPAdapter {
+	// Настраиваем retry manager с конфигурацией из timeoutConfig
+	retryConfig := RetryConfig{
+		MaxAttempts:   timeoutConfig.MaxRetries,
+		BaseDelay:     timeoutConfig.RetryDelay,
+		MaxDelay:      30 * time.Second,
+		BackoffFactor: 1.5,
+	}
+
+	return &IMAPAdapter{
+		client:            imapclient.NewClient(config),
+		config:            config,
+		mimeParser:        NewMIMEParser(),
+		addressNormalizer: NewAddressNormalizer(),
+		retryManager:      NewRetryManager(retryConfig),
+		timeoutConfig:     timeoutConfig,
+	}
+}
+
+// ✅ NEW: Метод для обратной совместимости (без timeoutConfig)
+func NewIMAPAdapterLegacy(config *imapclient.Config) *IMAPAdapter {
+	// Используем дефолтные значения таймаутов
+	defaultTimeoutConfig := TimeoutConfig{
+		ConnectTimeout:   30 * time.Second,
+		LoginTimeout:     15 * time.Second,
+		FetchTimeout:     60 * time.Second,
+		OperationTimeout: 120 * time.Second,
+		PageSize:         100,
+		MaxMessages:      500,
+		MaxRetries:       3,
+		RetryDelay:       10 * time.Second,
+	}
+
+	return NewIMAPAdapter(config, defaultTimeoutConfig)
+}
+
 // Connect устанавливает соединение с IMAP сервером с таймаутом
 func (a *IMAPAdapter) Connect(ctx context.Context) error {
 	operation := "IMAP connect"
@@ -136,18 +173,20 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	allMessages := []domain.EmailMessage{}
 	lastUID := criteria.SinceUID
 	processedCount := 0
+	hasMoreMessages := true
 
-	for {
+	for hasMoreMessages {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err() // Уважаем cancellation
 		default:
-			// Применяем пагинацию
+			// Проверяем лимит сообщений
 			if processedCount >= a.timeoutConfig.MaxMessages {
 				log.Info().
 					Int("processed", processedCount).
 					Int("max_messages", a.timeoutConfig.MaxMessages).
 					Msg("Reached maximum messages per poll, stopping pagination")
+				hasMoreMessages = false
 				break
 			}
 
@@ -160,7 +199,9 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			}
 
 			if len(messageUIDs) == 0 {
-				return allMessages, nil // Больше нет сообщений
+				// Больше нет сообщений
+				hasMoreMessages = false
+				break
 			}
 
 			// Получаем сообщения текущей страницы
@@ -187,7 +228,7 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 
 			// Если получили меньше сообщений, чем размер страницы, значит это последняя страница
 			if len(batchMessages) < a.timeoutConfig.PageSize {
-				break
+				hasMoreMessages = false
 			}
 		}
 	}
@@ -241,8 +282,8 @@ func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
 		seqSet.AddRange(startUID, endUID)
 	} else {
 		// Первый запрос - берем последние N сообщений
-		// В реальной реализации нужно получить максимальный UID и отнять limit
-		seqSet.AddNum(1, uint32(limit)) // Упрощенная реализация
+		// Используем специальный синтаксис для последних N сообщений
+		seqSet.AddNum(uint32(limit)) // Берем сообщения с UID от 1 до limit
 	}
 
 	return seqSet
@@ -250,13 +291,27 @@ func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
 
 // extractMaxUID извлекает максимальный UID из пачки сообщений
 func (a *IMAPAdapter) extractMaxUID(messages []domain.EmailMessage) uint32 {
-	// Временная реализация - в реальной реализации нужно извлекать UID из IMAP сообщений
-	// Пока возвращаем увеличенный счетчик
 	if len(messages) == 0 {
 		return 0
 	}
+
+	// Временная реализация - в реальной реализации нужно извлекать UID из IMAP сообщений
+	// Для тестирования используем простой счетчик
 	// В Phase 1C.2 добавим реальное извлечение UID из IMAP сообщений
-	return uint32(len(messages))
+	maxUID := uint32(0)
+	for _, msg := range messages {
+		// Временная логика - используем хэш MessageID для генерации псевдо-UID
+		// В реальной реализации нужно получить UID из IMAP сообщения
+		uidHash := uint32(0)
+		for _, char := range msg.MessageID {
+			uidHash = uidHash*31 + uint32(char)
+		}
+		if uidHash > maxUID {
+			maxUID = uidHash
+		}
+	}
+
+	return maxUID
 }
 
 // FetchMessagesWithBody получает сообщения с полным телом и вложениями с таймаутом

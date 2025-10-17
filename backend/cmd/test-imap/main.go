@@ -81,7 +81,7 @@ func main() {
 
 	// Infrastructure layer
 	fmt.Println("🛠️  Initializing dependencies...")
-	imapAdapter := email.NewIMAPAdapter(imapConfig)
+	imapAdapter := email.NewIMAPAdapterLegacy(imapConfig)
 	emailRepo, err := persistence.NewEmailRepository(persistence.RepositoryTypeInMemory, nil)
 	if err != nil {
 		log.Fatalf("❌ Failed to create email repository: %v", err)

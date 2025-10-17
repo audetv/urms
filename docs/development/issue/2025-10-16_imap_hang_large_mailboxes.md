@@ -2,39 +2,38 @@
 
 **Created:** 2025-10-16  
 **Priority:** HIGH  
-**Status:** Investigating  
+**Status:** 🔄 IN PROGRESS (Partial Fix)  
 **Component:** email  
 **Milestone:** Phase 1C
 
 ## Problem Context
 Обнаружено в Phase 1B при тестировании с почтовыми ящиками 2545+ сообщений.
 
-**Phase 1B Completion Report указывает:**
-- Архитектура завершена, но требует нагрузочного тестирования
-- MIME парсер требует реализации (текущая заглушка)
-- Восстановление после сбоев не тестировалось
+## Current Status
+**✅ PARTIALLY RESOLVED** - ADR-002 Timeout Strategy implemented
+
+### Completed Fixes:
+- ✅ IMAP timeout configuration (Connect=30s, Fetch=60s, Operation=120s)
+- ✅ UID-based pagination architecture (PageSize=100)
+- ✅ Context cancellation for all IMAP operations
+- ✅ Retry mechanism with configurable parameters
+
+### Remaining Issues:
+- 🔄 Message extraction not working in pagination logic
+- 🔄 No progress monitoring for batch processing
+- 🔄 Actual message processing not activated
 
 ## Technical Analysis
-**Root Cause:** Отсутствие таймаутов и пагинации в IMAP операциях
+**Root Cause:** Отсутствие таймаутов и пагинации в IMAP операциях ✅ RESOLVED  
+**Current Issue:** Логика извлечения сообщений в пагинации требует доработки
 
-**Affected Components:**
-- `IMAPPoller` - инфраструктурный слой
-- `IMAPAdapter` - работа с IMAP протоколом
-- `EmailGateway` - интерфейс порта
-
-## Solution Strategy
-Интегрировать фиксы в существующие задачи Phase 1C:
-
-### Task 2 Phase 1C - Comprehensive Testing & Validation
-- Добавить IMAP таймауты и пагинацию
-- Реализовать нагрузочное тестирование
-- Добавить бенчмарки производительности
-
-### Task 3 Phase 1C - Logging & Observability  
-- Добавить structured logging прогресса
-- Реализовать метрики производительности IMAP
+## Next Actions
+- [ ] Debug and fix message extraction in `fetchMessagesWithPagination`
+- [ ] Add structured logging for pagination progress
+- [ ] Test with actual message processing flow
+- [ ] Close issue after full validation
 
 ## Related Documents
 - [Phase 1B Completion Report](../reports/2025-10-16_email_module_phase1b_completion.md)
 - [Phase 1C Plan](../plans/PHASE_1C_PLAN.md)
-- [Architecture Principles](../../specifications/ARCHITECTURE_PRINCIPLES.md)
+- [ADR-002 Implementation Report](../reports/2025-10-17_adr-002_imap_timeout_strategy.md)

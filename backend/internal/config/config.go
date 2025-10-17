@@ -52,6 +52,16 @@ type IMAPConfig struct {
 	SSL          bool          `yaml:"ssl"`
 	PollInterval time.Duration `yaml:"poll_interval"`
 	ReadOnly     bool          `yaml:"read_only"`
+
+	// ✅ NEW: Timeout configuration from ADR-002
+	ConnectTimeout     time.Duration `yaml:"connect_timeout"`
+	LoginTimeout       time.Duration `yaml:"login_timeout"`
+	FetchTimeout       time.Duration `yaml:"fetch_timeout"`
+	OperationTimeout   time.Duration `yaml:"operation_timeout"`
+	PageSize           int           `yaml:"page_size"`
+	MaxMessagesPerPoll int           `yaml:"max_messages_per_poll"`
+	MaxRetries         int           `yaml:"max_retries"`
+	RetryDelay         time.Duration `yaml:"retry_delay"`
 }
 
 // ServerConfig конфигурация сервера
@@ -89,6 +99,16 @@ func LoadConfig() (*Config, error) {
 				SSL:          getEnvAsBool("URMS_IMAP_SSL", true),
 				PollInterval: getEnvAsDuration("URMS_IMAP_POLL_INTERVAL", 30*time.Second),
 				ReadOnly:     getEnvAsBool("URMS_IMAP_READ_ONLY", true),
+
+				// ✅ NEW: Timeout defaults from ADR-002
+				ConnectTimeout:     getEnvAsDuration("URMS_IMAP_CONNECT_TIMEOUT", 30*time.Second),
+				LoginTimeout:       getEnvAsDuration("URMS_IMAP_LOGIN_TIMEOUT", 15*time.Second),
+				FetchTimeout:       getEnvAsDuration("URMS_IMAP_FETCH_TIMEOUT", 60*time.Second),
+				OperationTimeout:   getEnvAsDuration("URMS_IMAP_OPERATION_TIMEOUT", 120*time.Second),
+				PageSize:           getEnvAsInt("URMS_IMAP_PAGE_SIZE", 100),
+				MaxMessagesPerPoll: getEnvAsInt("URMS_IMAP_MAX_MESSAGES_PER_POLL", 500),
+				MaxRetries:         getEnvAsInt("URMS_IMAP_MAX_RETRIES", 3),
+				RetryDelay:         getEnvAsDuration("URMS_IMAP_RETRY_DELAY", 10*time.Second),
 			},
 		},
 		Server: ServerConfig{
@@ -124,7 +144,50 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid server port: %d", c.Server.Port)
 	}
 
+	// ✅ NEW: Validate timeout configuration
+	if c.Email.IMAP.ConnectTimeout <= 0 {
+		return fmt.Errorf("IMAP connect timeout must be positive")
+	}
+	if c.Email.IMAP.FetchTimeout <= 0 {
+		return fmt.Errorf("IMAP fetch timeout must be positive")
+	}
+	if c.Email.IMAP.PageSize <= 0 {
+		return fmt.Errorf("IMAP page size must be positive")
+	}
+	if c.Email.IMAP.MaxMessagesPerPoll <= 0 {
+		return fmt.Errorf("IMAP max messages per poll must be positive")
+	}
+	if c.Email.IMAP.MaxRetries < 0 {
+		return fmt.Errorf("IMAP max retries cannot be negative")
+	}
+
 	return nil
+}
+
+// GetIMAPTimeoutConfig возвращает конфигурацию таймаутов для IMAP операций
+func (c *Config) GetIMAPTimeoutConfig() IMAPTimeoutConfig {
+	return IMAPTimeoutConfig{
+		ConnectTimeout:   c.Email.IMAP.ConnectTimeout,
+		LoginTimeout:     c.Email.IMAP.LoginTimeout,
+		FetchTimeout:     c.Email.IMAP.FetchTimeout,
+		OperationTimeout: c.Email.IMAP.OperationTimeout,
+		PageSize:         c.Email.IMAP.PageSize,
+		MaxMessages:      c.Email.IMAP.MaxMessagesPerPoll,
+		MaxRetries:       c.Email.IMAP.MaxRetries,
+		RetryDelay:       c.Email.IMAP.RetryDelay,
+	}
+}
+
+// IMAPTimeoutConfig представляет конфигурацию таймаутов для IMAP операций
+type IMAPTimeoutConfig struct {
+	ConnectTimeout   time.Duration
+	LoginTimeout     time.Duration
+	FetchTimeout     time.Duration
+	OperationTimeout time.Duration
+	PageSize         int
+	MaxMessages      int
+	MaxRetries       int
+	RetryDelay       time.Duration
 }
 
 // Helper functions для работы с environment variables

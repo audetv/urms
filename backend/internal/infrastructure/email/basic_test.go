@@ -2,6 +2,7 @@ package email
 
 import (
 	"testing"
+	"time"
 
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +23,33 @@ func TestIMAPAdapterCreation(t *testing.T) {
 		SSL:      true,
 	}
 
-	adapter := NewIMAPAdapter(config)
+	// ✅ ИСПРАВЛЕНО: Используем legacy конструктор для обратной совместимости
+	adapter := NewIMAPAdapterLegacy(config)
 	assert.NotNil(t, adapter, "IMAPAdapter should be created")
+}
+
+// TestIMAPAdapterCreationWithTimeouts проверяет создание IMAP адаптера с таймаутами
+func TestIMAPAdapterCreationWithTimeouts(t *testing.T) {
+	config := &imapclient.Config{
+		Server:   "test.server.com",
+		Port:     993,
+		Username: "test",
+		Password: "test",
+		SSL:      true,
+	}
+
+	timeoutConfig := TimeoutConfig{
+		ConnectTimeout:   30 * time.Second,
+		LoginTimeout:     15 * time.Second,
+		FetchTimeout:     60 * time.Second,
+		OperationTimeout: 120 * time.Second,
+		PageSize:         100,
+		MaxMessages:      500,
+		MaxRetries:       3,
+		RetryDelay:       10 * time.Second,
+	}
+
+	// ✅ ИСПРАВЛЕНО: Используем новый конструктор с таймаутами
+	adapter := NewIMAPAdapter(config, timeoutConfig)
+	assert.NotNil(t, adapter, "IMAPAdapter with timeouts should be created")
 }

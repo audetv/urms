@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
@@ -99,11 +100,46 @@ func TestEmailGatewayContractWithIMAP(t *testing.T) {
 	}
 
 	setupGateway := func() ports.EmailGateway {
-		return NewIMAPAdapter(imapConfig)
+		// ✅ ИСПРАВЛЕНО: Используем legacy конструктор
+		return NewIMAPAdapterLegacy(imapConfig)
 	}
 
 	// Запускаем контрактные тесты
 	RunEmailGatewayContractTests(t, "IMAPAdapter", setupGateway, nil)
+}
+
+// TestEmailGatewayContractWithIMAPAndTimeouts тестирует контракт с IMAP адаптером с таймаутами
+func TestEmailGatewayContractWithIMAPAndTimeouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping IMAP contract test with timeouts in short mode")
+	}
+
+	imapConfig := &imapclient.Config{
+		Server:   "localhost",
+		Port:     1143,
+		Username: "test",
+		Password: "test",
+		SSL:      false,
+	}
+
+	timeoutConfig := TimeoutConfig{
+		ConnectTimeout:   30 * time.Second,
+		LoginTimeout:     15 * time.Second,
+		FetchTimeout:     60 * time.Second,
+		OperationTimeout: 120 * time.Second,
+		PageSize:         100,
+		MaxMessages:      500,
+		MaxRetries:       3,
+		RetryDelay:       10 * time.Second,
+	}
+
+	setupGateway := func() ports.EmailGateway {
+		// ✅ ИСПРАВЛЕНО: Используем новый конструктор с таймаутами
+		return NewIMAPAdapter(imapConfig, timeoutConfig)
+	}
+
+	// Запускаем контрактные тесты
+	RunEmailGatewayContractTests(t, "IMAPAdapterWithTimeouts", setupGateway, nil)
 }
 
 // TestEmailRepositoryContractWithPostgres тестирует контракт с Postgres репозиторием

@@ -1,4 +1,4 @@
-// backend/internal/email/imapclient/config.go
+// backend/internal/infrastructure/email/imap/config.go
 package imapclient
 
 import (
@@ -18,6 +18,13 @@ type Config struct {
 	// Advanced options
 	ReadOnly bool          `yaml:"read_only" json:"read_only"` // Не помечать письма как прочитанные
 	Timeout  time.Duration `yaml:"timeout" json:"timeout"`     // Таймаут операций
+
+	// ✅ NEW: Extended timeout configuration from ADR-002
+	ConnectTimeout   time.Duration `yaml:"connect_timeout" json:"connect_timeout"`
+	LoginTimeout     time.Duration `yaml:"login_timeout" json:"login_timeout"`
+	FetchTimeout     time.Duration `yaml:"fetch_timeout" json:"fetch_timeout"`
+	OperationTimeout time.Duration `yaml:"operation_timeout" json:"operation_timeout"`
+	PageSize         int           `yaml:"page_size" json:"page_size"`
 }
 
 // DefaultConfig возвращает конфигурацию по умолчанию
@@ -30,6 +37,13 @@ func DefaultConfig() *Config {
 		Interval: 30 * time.Second,
 		ReadOnly: true,
 		Timeout:  30 * time.Second,
+
+		// ✅ NEW: Default timeout values
+		ConnectTimeout:   30 * time.Second,
+		LoginTimeout:     15 * time.Second,
+		FetchTimeout:     60 * time.Second,
+		OperationTimeout: 120 * time.Second,
+		PageSize:         100,
 	}
 }
 
@@ -50,6 +64,18 @@ func (c *Config) Validate() error {
 	if c.Interval < 10*time.Second {
 		return fmt.Errorf("polling interval too short: %v", c.Interval)
 	}
+
+	// ✅ NEW: Validate timeout configuration
+	if c.ConnectTimeout <= 0 {
+		return fmt.Errorf("connect timeout must be positive")
+	}
+	if c.FetchTimeout <= 0 {
+		return fmt.Errorf("fetch timeout must be positive")
+	}
+	if c.PageSize <= 0 {
+		return fmt.Errorf("page size must be positive")
+	}
+
 	return nil
 }
 
