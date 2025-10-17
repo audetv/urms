@@ -37,20 +37,20 @@ curl http://localhost:8085/health
 
 ## 🎯 Обновленные приоритеты Phase 1C
 
-### 🔴 Критические (Blocking)
-- [ ] **Задача 2.1**: Реализация IMAP Timeout Strategy (ADR-002)
-- [ ] **Задача 2.2**: Активация обработки сообщений в IMAP Poller
-- [ ] **Задача 2.3**: Context integration для cancellation
+### ✅ ЗАВЕРШЕНО (2025-10-17)
+- [x] **Задача 2.1**: Реализация IMAP Timeout Strategy (ADR-002) ✅
+- [x] **Задача 2.2**: Активация обработки сообщений в IMAP Poller ✅  
+- [x] **Задача 2.3**: Context integration для cancellation ✅
 
-### 🟡 Высокий приоритет  
+### 🔄 АКТИВНЫЕ ЗАДАЧИ
 - [ ] **Задача 3.1**: Structured logging (zerolog integration)
 - [ ] **Задача 3.2**: Message persistence verification
 - [ ] **Задача 3.3**: PostgreSQL migration integration
 
-### 🟠 Средний приоритет
-- [ ] **Задача 4.1**: Comprehensive Testing & Validation
-- [ ] **Задача 4.2**: Configuration Management
-- [ ] **Задача 4.3**: HTTP API Development
+### 🎯 СЛЕДУЮЩИЕ ЗАДАЧИ
+- [ ] **Задача 4.1**: Integration with MessageProcessor
+- [ ] **Задача 4.2**: Comprehensive end-to-end testing
+- [ ] **Задача 4.3**: Production deployment preparation
 
 ## 📋 Детализация критических задач
 

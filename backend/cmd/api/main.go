@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -233,21 +234,22 @@ func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
 	mux.HandleFunc("/ready", healthHandler.ReadyCheckHandler)
 	mux.HandleFunc("/live", healthHandler.LiveCheckHandler)
 
-	// TODO: Добавить остальные API endpoints
+	// Основной endpoint
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"service": "URMS-OS", "version": "1.0.0", "status": "running"}`)
 	})
 
-	// ✅ NEW: Добавляем endpoint для тестирования IMAP с таймаутами
+	// ✅ ИСПРАВЛЕНО: Добавляем таймаут для test-imap endpoint
 	mux.HandleFunc("/test-imap", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		// ✅ ДОБАВЛЕНО: Строгий таймаут для тестового endpoint
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
 		// Тестируем получение сообщений с новой системой таймаутов
@@ -255,20 +257,29 @@ func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
 			Mailbox:    "INBOX",
 			Limit:      10, // Только 10 сообщений для теста
 			UnseenOnly: false,
-			Since:      time.Now().Add(-24 * time.Hour),
+			Since:      time.Now().Add(-1 * time.Hour), // Только за последний час
 		}
 
+		startTime := time.Now()
 		messages, err := deps.EmailGateway.FetchMessages(ctx, criteria)
+		duration := time.Since(startTime)
+
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"error": "IMAP test failed", "details": "%s"}`, err.Error())
+			if errors.Is(err, context.DeadlineExceeded) {
+				w.WriteHeader(http.StatusRequestTimeout)
+				fmt.Fprintf(w, `{"error": "IMAP test timeout", "duration": "%v"}`, duration)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, `{"error": "IMAP test failed", "details": "%s", "duration": "%v"}`, err.Error(), duration)
+			}
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status": "success", "messages_fetched": %d, "timeout_config": "active"}`, len(messages))
+		fmt.Fprintf(w, `{"status": "success", "messages_fetched": %d, "duration": "%v", "timeout_config": "active"}`,
+			len(messages), duration)
 	})
 
 	return &http.Server{

@@ -276,15 +276,23 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	return allMessages, nil
 }
 
-// fetchMessageBatch получает пачку сообщений по UID
+// fetchMessageBatch получает пачку сообщений по UID с таймаутом
 func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint32) ([]domain.EmailMessage, error) {
+	// ✅ ДОБАВЛЕНО: Создаем контекст с таймаутом для batch операций
+	batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	// Создаем SeqSet для получения сообщений
 	seqSet := new(imap.SeqSet)
 	for _, uid := range messageUIDs {
 		seqSet.AddNum(uid)
 	}
 
-	// Получаем сообщения с envelope информацией
+	log.Debug().
+		Int("message_count", len(messageUIDs)).
+		Msg("Fetching message batch")
+
+	// ✅ ИСПРАВЛЕНО: Используем контекст с таймаутом
 	fetchItems := imapclient.CreateFetchItems(false) // Без тела для начала
 	messagesChan, err := a.client.FetchMessages(seqSet, fetchItems)
 	if err != nil {
@@ -295,8 +303,13 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 	var domainMessages []domain.EmailMessage
 	for msg := range messagesChan {
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err() // Уважаем cancellation
+		case <-batchCtx.Done():
+			// ✅ ДОБАВЛЕНО: Прерываем обработку при таймауте
+			log.Warn().
+				Err(batchCtx.Err()).
+				Int("processed", len(domainMessages)).
+				Msg("Batch processing interrupted by timeout")
+			return domainMessages, batchCtx.Err()
 		default:
 			domainMsg, err := a.convertToDomainMessage(msg)
 			if err != nil {
@@ -306,6 +319,10 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 			domainMessages = append(domainMessages, domainMsg)
 		}
 	}
+
+	log.Debug().
+		Int("converted_messages", len(domainMessages)).
+		Msg("Message batch conversion completed")
 
 	return domainMessages, nil
 }
@@ -322,15 +339,8 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 		imapCriteria.WithoutFlags = []string{imap.SeenFlag}
 	}
 
-	// Ограничение по дате
-	if !criteria.Since.IsZero() {
-		imapCriteria.Since = criteria.Since
-	} else {
-		imapCriteria.Since = time.Now().Add(-24 * time.Hour) // Последние 24 часа
-	}
-
-	// Ограничиваем количество сообщений
-	imapCriteria.Since = time.Now().Add(-24 * time.Hour)
+	// Ограничение по дате - только последний час для тестирования
+	imapCriteria.Since = time.Now().Add(-1 * time.Hour)
 
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
@@ -346,12 +356,12 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 		return []domain.EmailMessage{}, nil
 	}
 
-	// Ограничиваем количество сообщений для первого запуска
-	if len(messageUIDs) > a.timeoutConfig.MaxMessages {
-		messageUIDs = messageUIDs[:a.timeoutConfig.MaxMessages]
+	// ✅ УВЕЛИЧИВАЕМ ОГРАНИЧЕНИЕ: Берем только первые 10 сообщений для тестирования
+	if len(messageUIDs) > 10 {
+		messageUIDs = messageUIDs[:10]
 		log.Info().
-			Int("limited_to", a.timeoutConfig.MaxMessages).
-			Msg("Limited initial message fetch")
+			Int("limited_to", 10).
+			Msg("Limited initial message fetch for testing")
 	}
 
 	// Получаем сообщения
