@@ -33,7 +33,6 @@ urms-os/
 └── cmd/ # ENTRY POINTS (dependency wiring)
 ```
 
-
 ## 📋 Golden Rules
 
 ### ✅ DOs
@@ -49,6 +48,19 @@ urms-os/
 - Put business logic in adapters
 - Create vendor-specific database schemas
 - Hardcode API keys or endpoints
+
+## 📚 Development Philosophy
+
+### Documentation-First Approach
+- **Documentation == Code**: Документация имеет тот же приоритет, что и код
+- **Living Documentation**: Документы обновляются параллельно с кодом
+- **Session Handover**: Каждая сессия начинается с обновления документации
+- **AI Context**: Документация обеспечивает контекст для AI агентов
+
+### Testing-Driven Development  
+- **Test Results are Documentation**: Результаты тестов фиксируются в документации
+- **Reproduction Steps**: Проблемы документируются с шагами воспроизведения
+- **Progress Tracking**: Статус выполнения фиксируется после каждой сессии
 
 ## 🔧 Implementation Patterns
 
@@ -216,4 +228,4 @@ type IMAPConfig struct {
 ```
 
 **Maintainer**: URMS-OS Architecture Committee  
-**Last Updated**: ${current_date}
+**Last Updated**: 2025-10-17

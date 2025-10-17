@@ -1,4 +1,3 @@
-
 # URMS-OS AI Coding Guidelines
 **For LLM Agents (DeepSeek, ChatGPT, etc.)**  
 **Version: 1.0** | **Project: URMS-OS**
@@ -26,7 +25,6 @@ core/ → NO external dependencies
 infrastructure/ → CAN depend on core/ports/  
 cmd/ → WIRES dependencies together  
 
-
 ## 🔍 Code Review Checklist for AI
 
 ### Architecture Validation
@@ -47,6 +45,29 @@ cmd/ → WIRES dependencies together
 - [ ] Contract tests possible
 - [ ] Error handling proper
 - [ ] Logging structured
+
+## 📚 Documentation-First Development Principle
+
+### 🎯 Rule: "Documentation == Code"
+BEFORE writing code, ALWAYS update documentation to reflect:
+- Current architecture decisions
+- Implementation plans  
+- Known issues and solutions
+- Next steps for future sessions
+
+### 📝 Session Handover Protocol
+When starting new chat session, provide COMPLETE context:
+1. Updated ARCHITECTURE_PRINCIPLES.md
+2. Current STATUS with test results
+3. Active ISSUES with reproduction steps
+4. Next TASKS from development plan
+5. Recent DECISIONS from ADRs
+
+### 🔄 Living Documentation
+- Documentation MUST evolve with code
+- Every architectural change requires doc update
+- Test results and findings are documentation
+- Commit messages should reference documentation
 
 ## 💡 Prompt Templates for Developers
 
@@ -176,4 +197,4 @@ Reference: ARCHITECTURE_PRINCIPLES.md
 ```
 
 **AI Agent**: URMS-OS Architecture Guardian  
-**Version**: 1.0  
+**Version**: 1.0

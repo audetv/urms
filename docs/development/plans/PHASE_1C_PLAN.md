@@ -3,7 +3,7 @@
 
 ## 📋 Метаданные
 - **Этап**: Phase 1C - Production Integration & Deployment
-- **Статус**: 📋 ЗАПЛАНИРОВАНО
+- **Статус**: 🔄 В ПРОЦЕССЕ
 - **Предыдущий этап**: Phase 1B - IMAP Poller & Integration Testing
 - **Дата начала**: 2025-10-16
 - **Ожидаемая длительность**: 5-7 дней
@@ -11,113 +11,102 @@
 ## 🎯 Цели этапа
 Интеграция email модуля в основное приложение URMS-OS и подготовка к production развертыванию.
 
+## 🧪 Результаты тестирования API Server
+
+### ✅ Успешный запуск (2025-10-17)
+```bash
+# API Server running on :8085
+curl http://localhost:8085/health
+# Response: {"status":"UP","services":{"imap_email_gateway":...}}
+
+# IMAP Connection successful
+# Mailbox: 2562 messages, 210 unseen
+```
+
+### 🚨 Выявленные проблемы
+1. **IMAP Hanging Risk**: Подтвержден сценарий больших почтовых ящиков
+2. **Message Processing**: Poller подключен но не обрабатывает сообщения
+3. **No Timeout Strategy**: Критический риск для production
+
 ## ⚠️ Active Issues
 | Issue | Priority | Status | Blocked Tasks |
 |-------|----------|---------|---------------|
-| [#1](https://github.com/audetv/urms/issues/1) - IMAP Hang on Large Mailboxes | HIGH 🔴 | INVESTIGATING | Task 2 |
+| [#1](https://github.com/audetv/urms/issues/1) - IMAP Hang on Large Mailboxes | CRITICAL 🔴 | CONFIRMED | Task 2.1, 2.2, 2.3 |
+| Message Processing Inactive | HIGH 🟡 | INVESTIGATING | Task 2.2 |
+| No Structured Logging | MEDIUM 🟠 | PLANNED | Task 3.1 |
 
-## 📋 Задачи Phase 1C
+## 🎯 Обновленные приоритеты Phase 1C
 
-### Задача 1: Main Application Integration
-- [ ] Интеграция PostgresEmailRepository в основное приложение
-- [ ] Обновление dependency injection в cmd/api
-- [ ] Настройка конфигурации через environment variables
-- [ ] Создание фабрики для выбора репозитория (InMemory/PostgreSQL)
+### 🔴 Критические (Blocking)
+- [ ] **Задача 2.1**: Реализация IMAP Timeout Strategy (ADR-002)
+- [ ] **Задача 2.2**: Активация обработки сообщений в IMAP Poller
+- [ ] **Задача 2.3**: Context integration для cancellation
 
-### 🚨 Задача 2: Comprehensive Testing & Validation - UPDATED
-- [ ] **Реализация полноценного MIME парсера** (замена заглушки)
-- [ ] **Нагрузочное тестирование** обработки 1000+ сообщений
-- [ ] **End-to-end тесты** полного цикла от IMAP до БД
-- [ ] **Тестирование восстановления** после сетевых сбоев
-- [ ] **Бенчмарки производительности** критических операций
-- [ ] 🔴 **FIX: IMAP таймауты и пагинация** для больших почтовых ящиков
-- [ ] 🔴 **FIX: Structured logging** прогресса обработки
-- [ ] 🔴 **FIX: Context cancellation** для длительных операций
+### 🟡 Высокий приоритет  
+- [ ] **Задача 3.1**: Structured logging (zerolog integration)
+- [ ] **Задача 3.2**: Message persistence verification
+- [ ] **Задача 3.3**: PostgreSQL migration integration
 
-### Задача 3: Comprehensive Logging & Observability - UPDATED
-- [ ] Интеграция structured logging (zerolog/logrus)
-- [ ] Добавление correlation IDs для трассировки запросов
-- [ ] Настройка log levels и форматов
-- [ ] Добавление метрик производительности и мониторинга
-- [ ] 🔴 **FIX: Логирование прогресса IMAP операций**
+### 🟠 Средний приоритет
+- [ ] **Задача 4.1**: Comprehensive Testing & Validation
+- [ ] **Задача 4.2**: Configuration Management
+- [ ] **Задача 4.3**: HTTP API Development
 
-### Задача 4: Configuration Management
-- [ ] Создание централизованной конфигурационной системы
-- [ ] Поддержка environment variables и config files
-- [ ] Валидация конфигурации при старте приложения
-- [ ] Создание конфигурационных шаблонов для разных сред
+## 📋 Детализация критических задач
 
-### Задача 5: HTTP API Development
-- [ ] Создание REST API для управления email каналами
-- [ ] Реализация endpoints для проверки статуса email провайдеров
-- [ ] Добавление API для ручного запуска email обработки
-- [ ] Создание документации API (OpenAPI/Swagger)
+### Задача 2.1: IMAP Timeout Strategy (ADR-002)
+- [ ] Обновление IMAPConfig с таймаутами
+- [ ] Реализация UID-based пагинации
+- [ ] Context integration во все IMAP операции
+- [ ] Structured logging прогресса обработки
 
-### Задача 6: Production Deployment & Performance
-- [ ] Создание Dockerfile для production
-- [ ] Настройка health checks в docker-compose
-- [ ] Конфигурация для Kubernetes deployment
-- [ ] Оптимизация connection pooling и кэширования
+### Задача 2.2: Активация обработки сообщений
+- [ ] Активировать FetchMessages в IMAP Poller
+- [ ] Интегрировать MessageProcessor для бизнес-логики
+- [ ] Добавить сохранение в репозиторий
+- [ ] Реализовать обработку вложений
+
+### Задача 2.3: Context Integration
+- [ ] Добавить context во все IMAP операции
+- [ ] Реализовать cancellation для длительных операций
+- [ ] Добавить timeout handling в EmailService
 
 ## 🔧 Технические спецификации
 
-### Dependency Injection Structure
-```go
-// cmd/api/main.go
-func main() {
-    // Выбор репозитория на основе конфигурации
-    var repo ports.EmailRepository
-    if config.UsePostgreSQL {
-        repo = postgres.NewPostgresEmailRepository(db)
-    } else {
-        repo = inmemory.NewInMemoryEmailRepo()
-    }
-    
-    // Создание сервисов
-    emailService := services.NewEmailService(imapAdapter, repo, ...)
-}
-```
-
-### Configuration Structure
+### IMAP Timeout Configuration
 ```yaml
-database:
-  provider: "postgres"  # or "inmemory"
-  postgres:
-    dsn: "${DATABASE_URL}"
-    max_connections: 20
-
 email:
   imap:
-    server: "${IMAP_SERVER}"
-    username: "${IMAP_USERNAME}"
-    poll_interval: "30s"
-    
-logging:
-  level: "info"
-  format: "json"
+    connect_timeout: "30s"
+    login_timeout: "15s" 
+    fetch_timeout: "60s"
+    operation_timeout: "120s"
+    page_size: 100
+    max_messages_per_poll: 500
 ```
 
-### API Endpoints
-```
-GET  /api/v1/health          # System health status
-GET  /api/v1/email/status    # Email module status
-POST /api/v1/email/poll      # Manual email polling
-GET  /api/v1/email/channels  # List email channels
+### Context Integration Pattern
+```go
+type EmailGateway interface {
+    FetchMessages(ctx context.Context, criteria FetchCriteria) ([]domain.EmailMessage, error)
+    Connect(ctx context.Context) error
+    HealthCheck(ctx context.Context) error
+}
 ```
 
 ## 📊 Критерии успеха
 
 ### Функциональные требования
 - Автоматический запуск email обработки при старте приложения
-- Конфигурируемый выбор репозитория (InMemory/PostgreSQL)
-- Полная интеграция health checks в основной API
-- Structured logging с трассировкой запросов
+- Безопасная обработка почтовых ящиков с 5000+ сообщений
+- Конфигурируемые таймауты для всех IMAP операций
+- Structured logging с трассировкой прогресса
 
 ### Production Readiness
 - Готовность к deployment в Kubernetes
 - Настроенные health checks и liveness probes
-- Production-ready конфигурация
-- Оптимизированные настройки производительности
+- Production-ready конфигурация таймаутов
+- Мониторинг длительных операций
 
 ## 🚀 Следующие этапы
 
@@ -135,37 +124,37 @@ GET  /api/v1/email/channels  # List email channels
 
 ### Ключевые файлы для реализации:
 ```text
-backend/cmd/api/main.go
 backend/internal/config/config.go
-backend/internal/infrastructure/http/api.go
-backend/internal/infrastructure/logging/
-backend/deployments/docker/Dockerfile
+backend/internal/infrastructure/email/imap_adapter.go
+backend/internal/infrastructure/email/imap_poller.go
+backend/internal/core/services/email_service.go
 ```
 
 ### Зависимости:
-- Требуется работающая PostgreSQL база данных
-- Необходимы тестовые IMAP учетные записи
-- Нужен настроенный logging infrastructure
+- Требуется работающая IMAP учетная запись с большим почтовым ящиком
+- Необходимо тестирование с 5000+ сообщениями
+- Нужна настройка мониторинга прогресса обработки
 
 ### Связанные документы:
 - [Отчет Phase 1B](./2025-10-16_email_module_phase1b_completion.md)
-- [Спецификация Email модуля](../../specifications/EMAIL_MODULE_SPEC.md)
+- [ADR-002: IMAP Timeout Strategy](../decisions/ADR-002-imap-timeout-strategy.md)
+- [Тестовый отчет API Server](./2025-10-17_api_server_testing.md)
 - [Архитектурные принципы](../../../ARCHITECTURE_PRINCIPLES.md)
 
 ## 📦 Deliverables
 
 ### Code Deliverables
-- Интегрированное основное приложение URMS-OS
-- Production Docker configuration
-- Comprehensive API documentation
-- Performance optimization patches
+- IMAP Timeout Strategy implementation
+- Activated message processing pipeline
+- Context-integrated email operations
+- Production-ready configuration
 
 ### Documentation Deliverables
-- Deployment guide
-- API reference
-- Configuration guide
-- Troubleshooting manual
+- Updated ADR-002 with implementation details
+- Performance testing results
+- Production deployment guide
+- Monitoring and troubleshooting manual
 
 ---
 **Maintainer**: URMS-OS Architecture Committee  
-**Last Updated**: 2025-10-16
+**Last Updated**: 2025-10-17
