@@ -214,11 +214,16 @@ func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository, l
 	// Используем существующую реализацию из infrastructure
 	idGenerator := id.NewUUIDGenerator()
 
+	// ✅ АКТИВИРУЕМ MessageProcessor
+	messageProcessor := email.NewDefaultMessageProcessor(logger)
+	logger.Info(context.Background(), "✅ MessageProcessor activated",
+		"type", "DefaultMessageProcessor")
+
 	// ✅ NEW: Используем переданный structured logger
 	return services.NewEmailService(
 		gateway,
 		repo,
-		nil, // Пока без MessageProcessor
+		messageProcessor, // ✅ Теперь передаем реальный процессор вместо nil
 		idGenerator,
 		policy,
 		logger,
