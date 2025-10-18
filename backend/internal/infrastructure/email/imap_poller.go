@@ -8,7 +8,6 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
-	"github.com/rs/zerolog/log"
 )
 
 // IMAPPoller реализует автоматический опрос IMAP почтовых ящиков
@@ -22,6 +21,7 @@ type IMAPPoller struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	logger    ports.Logger // ✅ ДОБАВЛЯЕМ logger
 }
 
 // PollerConfig конфигурация IMAP Poller
@@ -53,6 +53,7 @@ func NewIMAPPoller(
 	repo ports.EmailRepository,
 	processor ports.MessageProcessor,
 	config *PollerConfig,
+	logger ports.Logger, // ✅ ДОБАВЛЯЕМ logger параметр
 ) *IMAPPoller {
 	if config.PollInterval == 0 {
 		config.PollInterval = 30 * time.Second
@@ -76,6 +77,7 @@ func NewIMAPPoller(
 			LastUID:      0,
 			LastPollTime: time.Now().Add(-24 * time.Hour), // Начинаем с сообщений за последние 24 часа
 		},
+		logger: logger,
 	}
 }
 
@@ -94,7 +96,7 @@ func (p *IMAPPoller) Start(ctx context.Context) error {
 
 	// Загружаем последнее состояние
 	if err := p.loadState(); err != nil {
-		log.Warn().Err(err).Msg("Failed to load poller state, starting fresh")
+		p.logger.Warn(ctx, "Failed to load poller state, starting fresh", "error", err.Error())
 	}
 
 	// Запускаем горутину для опроса
@@ -107,11 +109,10 @@ func (p *IMAPPoller) Start(ctx context.Context) error {
 		go p.healthCheckLoop()
 	}
 
-	log.Info().
-		Str("mailbox", p.config.Mailbox).
-		Dur("interval", p.config.PollInterval).
-		Uint32("last_uid", p.state.LastUID).
-		Msg("IMAP poller started")
+	p.logger.Info(ctx, "IMAP poller started",
+		"mailbox", p.config.Mailbox,
+		"interval", p.config.PollInterval,
+		"last_uid", p.state.LastUID)
 
 	return nil
 }
@@ -125,7 +126,7 @@ func (p *IMAPPoller) Stop() error {
 		return nil
 	}
 
-	log.Info().Msg("Stopping IMAP poller...")
+	p.logger.Info(p.ctx, "Stopping IMAP poller...")
 
 	// Отменяем контекст
 	if p.cancel != nil {
@@ -134,7 +135,7 @@ func (p *IMAPPoller) Stop() error {
 
 	// Сохраняем состояние
 	if err := p.saveState(); err != nil {
-		log.Error().Err(err).Msg("Failed to save poller state")
+		p.logger.Error(p.ctx, "Failed to save poller state", "error", err.Error())
 	}
 
 	p.state.IsRunning = false
@@ -142,7 +143,7 @@ func (p *IMAPPoller) Stop() error {
 	// Ждем завершения горутин
 	p.wg.Wait()
 
-	log.Info().Msg("IMAP poller stopped successfully")
+	p.logger.Info(p.ctx, "IMAP poller stopped successfully")
 	return nil
 }
 
@@ -155,7 +156,7 @@ func (p *IMAPPoller) pollLoop() {
 
 	// Выполняем немедленный первый опрос
 	if err := p.pollNewMessages(p.ctx); err != nil {
-		log.Error().Err(err).Msg("Initial poll failed")
+		p.logger.Error(p.ctx, "Initial poll failed", "error", err.Error())
 	}
 
 	for {
@@ -164,7 +165,7 @@ func (p *IMAPPoller) pollLoop() {
 			return
 		case <-ticker.C:
 			if err := p.pollNewMessages(p.ctx); err != nil {
-				log.Error().Err(err).Msg("Poll failed")
+				p.logger.Error(p.ctx, "Poll failed", "error", err.Error())
 				p.state.ErrorCount++
 			} else {
 				p.state.ErrorCount = 0 // Сбрасываем счетчик ошибок при успехе
@@ -190,7 +191,7 @@ func (p *IMAPPoller) healthCheckLoop() {
 			return
 		case <-ticker.C:
 			if err := p.gateway.HealthCheck(p.ctx); err != nil {
-				log.Warn().Err(err).Msg("Health check failed")
+				p.logger.Error(p.ctx, "Health check failed", "error", err.Error())
 			}
 		}
 	}
@@ -203,10 +204,9 @@ func (p *IMAPPoller) pollNewMessages(ctx context.Context) error {
 
 	p.state.TotalPolls++
 
-	log.Debug().
-		Uint32("since_uid", p.state.LastUID).
-		Str("mailbox", p.config.Mailbox).
-		Msg("Polling for new messages")
+	p.logger.Debug(ctx, "Polling for new messages",
+		"since_uid", p.state.LastUID,
+		"mailbox", p.config.Mailbox)
 
 	// Выбираем почтовый ящик
 	if err := p.gateway.SelectMailbox(ctx, p.config.Mailbox); err != nil {
@@ -228,13 +228,12 @@ func (p *IMAPPoller) pollNewMessages(ctx context.Context) error {
 	}
 
 	if len(messages) == 0 {
-		log.Debug().Msg("No new messages found")
+		p.logger.Debug(ctx, "No new messages found")
 		return nil
 	}
 
-	log.Info().
-		Int("count", len(messages)).
-		Msg("Found new messages")
+	p.logger.Info(ctx, "Found new messages",
+		"count", len(messages))
 
 	// Обрабатываем пачку сообщений
 	if err := p.processMessageBatch(ctx, messages); err != nil {
@@ -252,13 +251,12 @@ func (p *IMAPPoller) pollNewMessages(ctx context.Context) error {
 
 	// Сохраняем состояние
 	if err := p.saveState(); err != nil {
-		log.Warn().Err(err).Msg("Failed to save poller state")
+		p.logger.Warn(ctx, "Failed to save poller state", "error", err.Error())
 	}
 
-	log.Info().
-		Int("processed", len(messages)).
-		Uint32("last_uid", p.state.LastUID).
-		Msg("Message batch processed successfully")
+	p.logger.Info(ctx, "Message batch processed successfully",
+		"processed", len(messages),
+		"last_uid", p.state.LastUID)
 
 	return nil
 }
@@ -272,11 +270,9 @@ func (p *IMAPPoller) processMessageBatch(ctx context.Context, messages []domain.
 		default:
 			// Обрабатываем каждое сообщение
 			if err := p.processSingleMessage(ctx, msg); err != nil {
-				log.Error().
-					Err(err).
-					Str("message_id", msg.MessageID).
-					Int("index", i).
-					Msg("Failed to process message")
+				p.logger.Error(ctx, "Failed to process message", "error", err.Error(),
+					"message_id", msg.MessageID,
+					"index", i)
 				// Продолжаем обработку остальных сообщений
 				continue
 			}
@@ -302,10 +298,8 @@ func (p *IMAPPoller) processSingleMessage(ctx context.Context, msg domain.EmailM
 	// Помечаем как прочитанное если не в read-only режиме
 	if !p.config.ReadOnly {
 		if err := p.gateway.MarkAsRead(ctx, []string{msg.MessageID}); err != nil {
-			log.Warn().
-				Err(err).
-				Str("message_id", msg.MessageID).
-				Msg("Failed to mark message as read")
+			p.logger.Warn(ctx, "Failed to mark message as read", "error", err.Error(),
+				"message_id", msg.MessageID)
 		}
 	}
 

@@ -4,9 +4,10 @@ package email
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"time"
+
+	"github.com/audetv/urms/internal/core/ports"
 )
 
 // RetryConfig конфигурация retry механизма
@@ -30,12 +31,14 @@ func DefaultRetryConfig() RetryConfig {
 // RetryManager управляет повторными попытками выполнения операций
 type RetryManager struct {
 	config RetryConfig
+	logger ports.Logger // ✅ ДОБАВЛЯЕМ logger
 }
 
 // NewRetryManager создает новый менеджер повторных попыток
-func NewRetryManager(config RetryConfig) *RetryManager {
+func NewRetryManager(config RetryConfig, logger ports.Logger) *RetryManager {
 	return &RetryManager{
 		config: config,
+		logger: logger,
 	}
 }
 
@@ -44,12 +47,17 @@ func (m *RetryManager) ExecuteWithRetry(ctx context.Context, operation string, f
 	var lastErr error
 
 	for attempt := 1; attempt <= m.config.MaxAttempts; attempt++ {
-		log.Printf("🔄 %s attempt %d/%d", operation, attempt, m.config.MaxAttempts)
+		m.logger.Info(ctx, "Retry attempt",
+			"operation", operation,
+			"attempt", attempt,
+			"max_attempts", m.config.MaxAttempts)
 
 		err := fn()
 		if err == nil {
 			if attempt > 1 {
-				log.Printf("✅ %s succeeded on attempt %d", operation, attempt)
+				m.logger.Info(ctx, "Operation succeeded after retry",
+					"operation", operation,
+					"attempt", attempt)
 			}
 			return nil
 		}
@@ -59,26 +67,38 @@ func (m *RetryManager) ExecuteWithRetry(ctx context.Context, operation string, f
 		// Проверяем, является ли ошибка временной
 		if retryableErr, ok := err.(interface{ IsRetryable() bool }); ok {
 			if !retryableErr.IsRetryable() {
-				log.Printf("❌ %s failed with permanent error: %v", operation, err)
+				m.logger.Error(ctx, "Operation failed with permanent error",
+					"operation", operation,
+					"error", err.Error())
 				return err
 			}
 		}
 
 		// Если это последняя попытка, выходим
 		if attempt == m.config.MaxAttempts {
-			log.Printf("❌ %s failed after %d attempts: %v", operation, m.config.MaxAttempts, err)
+			m.logger.Error(ctx, "Operation failed after all attempts",
+				"operation", operation,
+				"max_attempts", m.config.MaxAttempts,
+				"error", err.Error())
 			return fmt.Errorf("operation failed after %d attempts: %w", m.config.MaxAttempts, err)
 		}
 
 		// Вычисляем задержку для следующей попытки
 		delay := m.calculateDelay(attempt)
-		log.Printf("⏳ %s failed, retrying in %v: %v", operation, delay, err)
+		m.logger.Warn(ctx, "Operation failed, retrying after delay",
+			"operation", operation,
+			"attempt", attempt,
+			"delay", delay.String(),
+			"error", err.Error())
 
 		// Ждем перед следующей попыткой
 		select {
 		case <-time.After(delay):
 			// Продолжаем
 		case <-ctx.Done():
+			m.logger.Warn(ctx, "Operation cancelled during retry",
+				"operation", operation,
+				"error", ctx.Err().Error())
 			return fmt.Errorf("operation cancelled: %w", ctx.Err())
 		}
 	}

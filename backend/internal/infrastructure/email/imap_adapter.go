@@ -3,16 +3,14 @@ package email
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
+	"github.com/audetv/urms/internal/infrastructure/logging"
 	"github.com/emersion/go-imap"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 // MessageBodyInfo содержит распарсенную информацию о теле сообщения
@@ -30,6 +28,7 @@ type IMAPAdapter struct {
 	addressNormalizer *AddressNormalizer
 	retryManager      *RetryManager
 	timeoutConfig     TimeoutConfig
+	logger            ports.Logger // ✅ ДОБАВЛЯЕМ ports.Logger
 }
 
 // TimeoutConfig конфигурация таймаутов для IMAP операций
@@ -45,7 +44,7 @@ type TimeoutConfig struct {
 }
 
 // NewIMAPAdapter создает новый IMAP адаптер с поддержкой таймаутов
-func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig) *IMAPAdapter {
+func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig, logger ports.Logger) *IMAPAdapter {
 	// Настраиваем retry manager с конфигурацией из timeoutConfig
 	retryConfig := RetryConfig{
 		MaxAttempts:   timeoutConfig.MaxRetries,
@@ -59,13 +58,14 @@ func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig) *IMA
 		config:            config,
 		mimeParser:        NewMIMEParser(),
 		addressNormalizer: NewAddressNormalizer(),
-		retryManager:      NewRetryManager(retryConfig),
+		retryManager:      NewRetryManager(retryConfig, logger),
 		timeoutConfig:     timeoutConfig,
+		logger:            logger, // ✅ ДОБАВЛЯЕМ logger
 	}
 }
 
 // NewIMAPAdapterWithTimeouts создает новый IMAP адаптер с поддержкой расширенной конфигурации таймаутов
-func NewIMAPAdapterWithTimeouts(config *imapclient.Config, timeoutConfig TimeoutConfig) *IMAPAdapter {
+func NewIMAPAdapterWithTimeouts(config *imapclient.Config, timeoutConfig TimeoutConfig, logger ports.Logger) *IMAPAdapter {
 	// Настраиваем retry manager с конфигурацией из timeoutConfig
 	retryConfig := RetryConfig{
 		MaxAttempts:   timeoutConfig.MaxRetries,
@@ -79,8 +79,9 @@ func NewIMAPAdapterWithTimeouts(config *imapclient.Config, timeoutConfig Timeout
 		config:            config,
 		mimeParser:        NewMIMEParser(),
 		addressNormalizer: NewAddressNormalizer(),
-		retryManager:      NewRetryManager(retryConfig),
+		retryManager:      NewRetryManager(retryConfig, logger),
 		timeoutConfig:     timeoutConfig,
+		logger:            logger, // ✅ ДОБАВЛЯЕМ logger
 	}
 }
 
@@ -98,7 +99,10 @@ func NewIMAPAdapterLegacy(config *imapclient.Config) *IMAPAdapter {
 		RetryDelay:       10 * time.Second,
 	}
 
-	return NewIMAPAdapter(config, defaultTimeoutConfig)
+	// ✅ СОЗДАЕМ тестовый logger для обратной совместимости
+	testLogger := logging.NewTestLogger()
+
+	return NewIMAPAdapter(config, defaultTimeoutConfig, testLogger)
 }
 
 // Connect устанавливает соединение с IMAP сервером с таймаутом
@@ -109,45 +113,40 @@ func (a *IMAPAdapter) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.ConnectTimeout)
 	defer cancel()
 
-	// ✅ ИСПРАВЛЕНО: Правильное использование zerolog
-	logger := a.getLogger(ctx)
-	logger.Info().
-		Str("operation", operation).
-		Str("server", a.config.Server).
-		Int("port", a.config.Port).
-		Str("timeout", a.timeoutConfig.ConnectTimeout.String()).
-		Msg("Starting IMAP connection")
+	a.logger.Info(ctx, "Starting IMAP connection",
+		"operation", operation,
+		"server", a.config.Server,
+		"port", a.config.Port,
+		"timeout", a.timeoutConfig.ConnectTimeout.String())
 
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		err := a.client.Connect()
 		if err != nil {
-			logger.Error().
-				Str("operation", operation).
-				Str("server", a.config.Server).
-				Err(err).
-				Msg("IMAP connection failed")
+			a.logger.Error(ctx, "IMAP connection failed",
+				"operation", operation,
+				"server", a.config.Server,
+				"error", err.Error())
 			return NewIMAPError("connect", IMAPErrorConnection, "failed to connect to IMAP server", err)
 		}
 
-		logger.Info().
-			Str("operation", operation).
-			Str("server", a.config.Server).
-			Msg("IMAP connection successful")
+		a.logger.Info(ctx, "IMAP connection successful",
+			"operation", operation,
+			"server", a.config.Server)
 		return nil
 	})
 }
 
 // ✅ NEW: Вспомогательный метод для получения логгера с context
-func (a *IMAPAdapter) getLogger(ctx context.Context) *zerolog.Logger {
-	// Временная реализация - в реальной реализации нужно интегрировать ports.Logger
-	logger := zerolog.Ctx(ctx)
-	if logger.GetLevel() == zerolog.Disabled {
-		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-		defaultLogger := zerolog.New(consoleWriter).With().Timestamp().Logger()
-		return &defaultLogger
-	}
-	return logger
-}
+// func (a *IMAPAdapter) getLogger(ctx context.Context) *zerolog.Logger {
+// 	// Временная реализация - в реальной реализации нужно интегрировать ports.Logger
+// 	logger := zerolog.Ctx(ctx)
+// 	if logger.GetLevel() == zerolog.Disabled {
+// 		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+// 		defaultLogger := zerolog.New(consoleWriter).With().Timestamp().Logger()
+// 		return &defaultLogger
+// 	}
+// 	return logger
+// }
 
 // Disconnect закрывает соединение
 func (a *IMAPAdapter) Disconnect() error {
@@ -195,25 +194,21 @@ func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCri
 
 // fetchMessagesWithPagination - внутренний метод с поддержкой пагинации
 func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
-	logger := a.getLogger(ctx)
+	a.logger.Info(ctx, "Starting IMAP pagination",
+		"operation", "fetch_pagination",
+		"mailbox", criteria.Mailbox,
+		"since_uid", criteria.SinceUID,
+		"since", criteria.Since,
+		"page_size", a.timeoutConfig.PageSize)
 
 	// ВЫБИРАЕМ почтовый ящик перед поиском
 	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
-		logger.Error().
-			Str("operation", "select_mailbox").
-			Str("mailbox", criteria.Mailbox).
-			Err(err).
-			Msg("Failed to select mailbox")
+		a.logger.Error(ctx, "Failed to select mailbox",
+			"operation", "select_mailbox",
+			"mailbox", criteria.Mailbox,
+			"error", err.Error())
 		return nil, NewIMAPError("select_mailbox", IMAPErrorServer, fmt.Sprintf("failed to select mailbox %s", criteria.Mailbox), err)
 	}
-
-	logger.Info().
-		Str("operation", "fetch_pagination").
-		Str("mailbox", criteria.Mailbox).
-		Uint32("since_uid", criteria.SinceUID).
-		Time("since", criteria.Since).
-		Int("page_size", a.timeoutConfig.PageSize).
-		Msg("Starting IMAP pagination")
 
 	// ✅ ИСПРАВЛЕНО: Для первого запуска используем альтернативный подход
 	if criteria.SinceUID == 0 {
@@ -221,7 +216,7 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	}
 
 	// Конвертируем доменные критерии в IMAP-специфичные
-	imapCriteria := a.convertToIMAPCriteria(criteria)
+	imapCriteria := a.convertToIMAPCriteria(ctx, criteria)
 
 	// Ищем сообщения по UID с поддержкой пагинации
 	allMessages := []domain.EmailMessage{}
@@ -233,56 +228,47 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	for hasMoreMessages {
 		select {
 		case <-ctx.Done():
-			logger.Warn().
-				Str("operation", "fetch_pagination").
-				Int("processed", processedCount).
-				Int("total_pages", pageNumber-1).
-				Msg("IMAP pagination cancelled by context")
+			a.logger.Warn(ctx, "IMAP pagination cancelled by context",
+				"operation", "fetch_pagination",
+				"processed", processedCount,
+				"total_pages", pageNumber-1)
 			return nil, ctx.Err()
 		default:
 			// Проверяем лимит сообщений
 			if processedCount >= a.timeoutConfig.MaxMessages {
-				logger.Info().
-					Str("operation", "fetch_pagination").
-					Int("processed", processedCount).
-					Int("max_messages", a.timeoutConfig.MaxMessages).
-					Msg("Reached maximum messages per poll, stopping pagination")
+				a.logger.Info(ctx, "Reached maximum messages per poll, stopping pagination",
+					"operation", "fetch_pagination",
+					"processed", processedCount,
+					"max_messages", a.timeoutConfig.MaxMessages)
 				hasMoreMessages = false
 				break
 			}
 
 			// Обновляем критерии для следующей страницы
-			imapCriteria.Uid = a.createUIDSeqSet(lastUID, a.timeoutConfig.PageSize)
+			imapCriteria.Uid = a.createUIDSeqSet(ctx, lastUID, a.timeoutConfig.PageSize)
 
-			logger.Debug().
-				Str("operation", "fetch_pagination").
-				Int("page", pageNumber).
-				Uint32("last_uid", lastUID).
-				Msg("Searching for messages with UID criteria")
+			a.logger.Debug(ctx, "Searching for messages with UID criteria",
+				"operation", "fetch_pagination",
+				"page", pageNumber,
+				"last_uid", lastUID)
 
 			messageUIDs, err := a.client.SearchMessages(imapCriteria)
 			if err != nil {
-				logger.Error().
-					Str("operation", "fetch_pagination").
-					Int("page", pageNumber).
-					Err(err).
-					Msg("Failed to search messages")
+				a.logger.Error(ctx, "Failed to search messages",
+					"operation", "fetch_messages",
+					"page", pageNumber,
+					"error", err.Error())
 				return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search messages", err)
 			}
 
-			logger.Debug().
-				Str("operation", "fetch_pagination").
-				Int("page", pageNumber).
-				Int("found_uids", len(messageUIDs)).
-				Msg("IMAP search results")
+			a.logger.Debug(ctx, "Search results", "operation", "fetch_pagination", "page", pageNumber, "found_uids", len(messageUIDs))
 
 			if len(messageUIDs) == 0 {
 				// Больше нет сообщений
-				logger.Info().
-					Str("operation", "fetch_pagination").
-					Int("total_pages", pageNumber).
-					Int("total_messages", len(allMessages)).
-					Msg("No more messages found, ending pagination")
+				a.logger.Info(ctx, "No more messages found, ending pagination",
+					"operation", "fetch_pagination",
+					"total_pages", pageNumber,
+					"total_messages", len(allMessages))
 				hasMoreMessages = false
 				break
 			}
@@ -290,11 +276,10 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			// Получаем сообщения текущей страницы
 			batchMessages, err := a.fetchMessageBatch(ctx, messageUIDs)
 			if err != nil {
-				logger.Error().
-					Str("operation", "fetch_pagination").
-					Int("page", pageNumber).
-					Err(err).
-					Msg("Failed to fetch message batch")
+				a.logger.Error(ctx, "Failed to fetch message batch",
+					"operation", "fetch_pagination",
+					"page", pageNumber,
+					"error", err.Error())
 				return nil, err
 			}
 
@@ -304,44 +289,43 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 
 			// Обновляем lastUID для следующей итерации
 			if len(batchMessages) > 0 {
-				lastUID = a.extractMaxUID(batchMessages)
+				lastUID = a.extractMaxUID(ctx, batchMessages)
 			}
 
 			// Логируем прогресс
-			logger.Info().
-				Str("operation", "fetch_pagination").
-				Int("page", pageNumber).
-				Int("batch_size", len(batchMessages)).
-				Int("total_processed", processedCount).
-				Uint32("last_uid", lastUID).
-				Msg("IMAP pagination progress")
+			a.logger.Info(ctx, "IMAP pagination progress",
+				"operation", "fetch_pagination",
+				"page", pageNumber,
+				"batch_size", len(batchMessages),
+				"total_processed", processedCount,
+				"last_uid", lastUID)
 
 			// Если получили меньше сообщений, чем размер страницы, значит это последняя страница
 			if len(batchMessages) < a.timeoutConfig.PageSize {
 				hasMoreMessages = false
-				logger.Info().
-					Str("operation", "fetch_pagination").
-					Int("final_page", pageNumber).
-					Int("total_messages", len(allMessages)).
-					Msg("Reached last page of messages")
+				a.logger.Info(ctx, "Reached last page of messages",
+					"operation", "fetch_pagination",
+					"page", pageNumber,
+					"total_messages", len(allMessages))
 			}
 
 			pageNumber++
 		}
 	}
 
-	logger.Info().
-		Str("operation", "fetch_pagination").
-		Int("total_messages", len(allMessages)).
-		Int("total_pages", pageNumber-1).
-		Msg("IMAP pagination completed")
+	a.logger.Info(ctx, "IMAP pagination completed",
+		"operation", "fetch_pagination",
+		"total_messages", len(allMessages),
+		"total_pages", pageNumber-1)
 
 	return allMessages, nil
 }
 
 // fetchMessageBatch получает пачку сообщений по UID с таймаутом
 func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint32) ([]domain.EmailMessage, error) {
-	logger := a.getLogger(ctx)
+	a.logger.Debug(ctx, "Fetching message batch",
+		"operation", "fetch_batch",
+		"message_count", len(messageUIDs))
 
 	// ✅ ДОБАВЛЕНО: Создаем контекст с таймаутом для batch операций
 	batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -353,19 +337,11 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 		seqSet.AddNum(uid)
 	}
 
-	logger.Debug().
-		Str("operation", "fetch_batch").
-		Int("message_count", len(messageUIDs)).
-		Msg("Fetching message batch")
-
 	// ✅ ИСПРАВЛЕНО: Используем контекст с таймаутом
 	fetchItems := imapclient.CreateFetchItems(false) // Без тела для начала
 	messagesChan, err := a.client.FetchMessages(seqSet, fetchItems)
 	if err != nil {
-		logger.Error().
-			Str("operation", "fetch_batch").
-			Err(err).
-			Msg("Failed to fetch messages")
+		a.logger.Error(ctx, "Failed to fetch messages", "operation", "fetch_batch", "error", err.Error())
 		return nil, NewIMAPError("fetch_messages", IMAPErrorProtocol, "failed to fetch messages", err)
 	}
 
@@ -375,40 +351,35 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 		select {
 		case <-batchCtx.Done():
 			// ✅ ДОБАВЛЕНО: Прерываем обработку при таймауте
-			logger.Warn().
-				Str("operation", "fetch_batch").
-				Err(batchCtx.Err()).
-				Int("processed", len(domainMessages)).
-				Msg("Batch processing interrupted by timeout")
+			a.logger.Warn(ctx, "Batch processing interrupted by timeout",
+				"operation", "fetch_batch",
+				"processed", len(domainMessages),
+				"error", batchCtx.Err().Error())
 			return domainMessages, batchCtx.Err()
 		default:
 			domainMsg, err := a.convertToDomainMessage(msg)
 			if err != nil {
-				logger.Warn().
-					Str("operation", "fetch_batch").
-					Uint32("uid", msg.Uid).
-					Err(err).
-					Msg("Failed to convert IMAP message")
+				a.logger.Warn(ctx, "Failed to convert IMAP message",
+					"operation", "fetch_batch",
+					"uid", msg.Uid,
+					"error", err.Error())
 				continue
 			}
 			domainMessages = append(domainMessages, domainMsg)
 		}
 	}
 
-	logger.Debug().
-		Str("operation", "fetch_batch").
-		Int("converted_messages", len(domainMessages)).
-		Msg("Message batch conversion completed")
+	a.logger.Debug(ctx, "Message batch conversion completed",
+		"operation", "fetch_batch",
+		"converted_messages", len(domainMessages))
 
 	return domainMessages, nil
 }
 
 // fetchInitialMessages получает сообщения для первого запуска (без UID)
 func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
-	logger := a.getLogger(ctx)
-	logger.Info().
-		Str("operation", "fetch_initial").
-		Msg("Performing initial message fetch without UID tracking")
+
+	a.logger.Info(ctx, "Performing initial message fetch without UID tracking", "operation", "fetch_initial")
 
 	// Используем поиск по дате и статусу
 	imapCriteria := &imap.SearchCriteria{}
@@ -423,18 +394,14 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
-		logger.Error().
-			Str("operation", "fetch_initial").
-			Err(err).
-			Msg("Failed to search initial messages")
+		a.logger.Error(ctx, "Failed to search initial messages", "operation", "fetch_initial", "error", err.Error())
 		return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search initial messages", err)
 	}
 
-	logger.Info().
-		Str("operation", "fetch_initial").
-		Int("found_messages", len(messageUIDs)).
-		Time("since", imapCriteria.Since).
-		Msg("Initial IMAP search completed")
+	a.logger.Info(ctx, "Initial message fetch completed",
+		"operation", "fetch_initial",
+		"message_count", len(messageUIDs),
+		"since", imapCriteria.Since)
 
 	if len(messageUIDs) == 0 {
 		return []domain.EmailMessage{}, nil
@@ -443,10 +410,9 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 	// ✅ УВЕЛИЧИВАЕМ ОГРАНИЧЕНИЕ: Берем только первые 10 сообщений для тестирования
 	if len(messageUIDs) > 10 {
 		messageUIDs = messageUIDs[:10]
-		logger.Info().
-			Str("operation", "fetch_initial").
-			Int("limited_to", 10).
-			Msg("Limited initial message fetch for testing")
+		a.logger.Info(ctx, "Limited initial message fetch for testing",
+			"operation", "fetch_initial",
+			"limited_to", 10)
 	}
 
 	// Получаем сообщения
@@ -454,7 +420,7 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 }
 
 // createUIDSeqSet создает SeqSet для пагинации по UID
-func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
+func (a *IMAPAdapter) createUIDSeqSet(ctx context.Context, sinceUID uint32, limit int) *imap.SeqSet {
 	seqSet := new(imap.SeqSet)
 
 	if sinceUID > 0 {
@@ -464,16 +430,14 @@ func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
 		endUID := startUID + uint32(limit) - 1
 		seqSet.AddRange(startUID, endUID)
 
-		log.Debug().
-			Uint32("start_uid", startUID).
-			Uint32("end_uid", endUID).
-			Int("limit", limit).
-			Msg("Creating UID range for pagination")
+		a.logger.Debug(ctx, "Creating UID range for pagination",
+			"start_uid", startUID,
+			"end_uid", endUID,
+			"limit", limit)
 	} else {
 		// ✅ ИСПРАВЛЕНО: Для первого запроса используем ALL вместо конкретного диапазона
 		// UID будет установлен в convertToIMAPCriteria через дату
-		log.Debug().
-			Msg("Using date-based criteria for initial search, no UID range")
+		a.logger.Debug(ctx, "Using date-based criteria for initial search, no UID range")
 		// Не устанавливаем UID - используем критерии по дате
 	}
 
@@ -481,7 +445,7 @@ func (a *IMAPAdapter) createUIDSeqSet(sinceUID uint32, limit int) *imap.SeqSet {
 }
 
 // extractMaxUID извлекает максимальный UID из пачки сообщений
-func (a *IMAPAdapter) extractMaxUID(messages []domain.EmailMessage) uint32 {
+func (a *IMAPAdapter) extractMaxUID(ctx context.Context, messages []domain.EmailMessage) uint32 {
 	if len(messages) == 0 {
 		return 0
 	}
@@ -500,7 +464,7 @@ func (a *IMAPAdapter) extractMaxUID(messages []domain.EmailMessage) uint32 {
 
 	if maxUID == 0 {
 		// Fallback: используем временную логику если UID не найден
-		log.Warn().Msg("No IMAP UID found in messages, using fallback logic")
+		a.logger.Warn(ctx, "No IMAP UID found in messages, using fallback logic")
 		for _, msg := range messages {
 			uidHash := uint32(0)
 			for _, char := range msg.MessageID {
@@ -525,7 +489,7 @@ func (a *IMAPAdapter) FetchMessagesWithBody(ctx context.Context, criteria ports.
 		return nil, fmt.Errorf("failed to select mailbox %s: %w", criteria.Mailbox, err)
 	}
 
-	imapCriteria := a.convertToIMAPCriteria(criteria)
+	imapCriteria := a.convertToIMAPCriteria(ctx, criteria)
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search messages: %w", err)
@@ -555,7 +519,7 @@ func (a *IMAPAdapter) FetchMessagesWithBody(ctx context.Context, criteria ports.
 		default:
 			domainMsg, err := a.convertToDomainMessageWithBody(msg)
 			if err != nil {
-				log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message with body")
+				a.logger.Warn(ctx, "Failed to convert IMAP message with body", "uid", msg.Uid, "error", err.Error())
 				continue
 			}
 			domainMessages = append(domainMessages, domainMsg)
@@ -580,7 +544,7 @@ func (a *IMAPAdapter) MarkAsRead(ctx context.Context, messageIDs []string) error
 
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		// TODO: Реализовать пометку сообщений как прочитанных
-		log.Info().Strs("message_ids", messageIDs).Msg("Marking messages as read")
+		a.logger.Info(ctx, "Marking messages as read", "message_ids", messageIDs)
 		return nil
 	})
 }
@@ -596,7 +560,7 @@ func (a *IMAPAdapter) MarkAsProcessed(ctx context.Context, messageIDs []string) 
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		// IMAP не поддерживает эту операцию напрямую
 		// Можно реализовать через перемещение в другую папку
-		log.Info().Strs("message_ids", messageIDs).Msg("Marking messages as processed")
+		a.logger.Info(ctx, "Marking messages as processed", "message_ids", messageIDs)
 		return nil
 	})
 }
@@ -674,7 +638,7 @@ func (a *IMAPAdapter) GetMailboxInfo(ctx context.Context, name string) (*ports.M
 }
 
 // convertToIMAPCriteria конвертирует доменные критерии в IMAP-специфичные
-func (a *IMAPAdapter) convertToIMAPCriteria(criteria ports.FetchCriteria) *imap.SearchCriteria {
+func (a *IMAPAdapter) convertToIMAPCriteria(ctx context.Context, criteria ports.FetchCriteria) *imap.SearchCriteria {
 	imapCriteria := &imap.SearchCriteria{}
 
 	// ✅ ИСПРАВЛЕНО: Для первого запроса (sinceUID=0) ищем все непрочитанные сообщения
@@ -692,16 +656,13 @@ func (a *IMAPAdapter) convertToIMAPCriteria(criteria ports.FetchCriteria) *imap.
 			imapCriteria.Since = time.Now().Add(-7 * 24 * time.Hour)
 		}
 
-		log.Debug().
-			Time("since", imapCriteria.Since).
-			Bool("unseen_only", criteria.UnseenOnly).
-			Msg("Using date-based search for initial polling")
+		a.logger.Info(ctx, "Using date-based search for initial polling",
+			"since", imapCriteria.Since,
+			"unseen_only", criteria.UnseenOnly)
 	} else {
 		// Для последующих запросов используем UID-based поиск
 		// UID будет установлен в пагинации
-		log.Debug().
-			Uint32("since_uid", criteria.SinceUID).
-			Msg("Using UID-based search for pagination")
+		a.logger.Debug(ctx, "Using UID-based search for pagination", "since_uid", criteria.SinceUID)
 	}
 
 	return imapCriteria

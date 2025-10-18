@@ -11,6 +11,7 @@ import (
 	"github.com/audetv/urms/internal/core/services"
 	"github.com/audetv/urms/internal/infrastructure/common/id"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
+	"github.com/audetv/urms/internal/infrastructure/logging"
 	persistence "github.com/audetv/urms/internal/infrastructure/persistence/email"
 	"github.com/stretchr/testify/assert"
 )
@@ -114,6 +115,9 @@ func TestEmailGatewayContractWithIMAPAndTimeouts(t *testing.T) {
 		t.Skip("Skipping IMAP contract test with timeouts in short mode")
 	}
 
+	// Создаем тестовый logger
+	logger := logging.NewTestLogger()
+
 	imapConfig := &imapclient.Config{
 		Server:   "localhost",
 		Port:     1143,
@@ -135,7 +139,7 @@ func TestEmailGatewayContractWithIMAPAndTimeouts(t *testing.T) {
 
 	setupGateway := func() ports.EmailGateway {
 		// ✅ ИСПРАВЛЕНО: Используем новый конструктор с таймаутами
-		return NewIMAPAdapter(imapConfig, timeoutConfig)
+		return NewIMAPAdapter(imapConfig, timeoutConfig, logger)
 	}
 
 	// Запускаем контрактные тесты

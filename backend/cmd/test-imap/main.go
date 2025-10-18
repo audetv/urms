@@ -14,31 +14,9 @@ import (
 	"github.com/audetv/urms/internal/infrastructure/common/id"
 	"github.com/audetv/urms/internal/infrastructure/email"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
+	"github.com/audetv/urms/internal/infrastructure/logging"
 	persistence "github.com/audetv/urms/internal/infrastructure/persistence/email"
 )
-
-// ConsoleLogger реализует ports.Logger для вывода в консоль
-type ConsoleLogger struct{}
-
-func (l *ConsoleLogger) Debug(ctx context.Context, msg string, fields ...interface{}) {
-	fmt.Printf("🔍 [DEBUG] %s %v\n", msg, fields)
-}
-
-func (l *ConsoleLogger) Info(ctx context.Context, msg string, fields ...interface{}) {
-	fmt.Printf("ℹ️  [INFO] %s %v\n", msg, fields)
-}
-
-func (l *ConsoleLogger) Warn(ctx context.Context, msg string, fields ...interface{}) {
-	fmt.Printf("⚠️  [WARN] %s %v\n", msg, fields)
-}
-
-func (l *ConsoleLogger) Error(ctx context.Context, msg string, fields ...interface{}) {
-	fmt.Printf("❌ [ERROR] %s %v\n", msg, fields)
-}
-
-func (l *ConsoleLogger) WithContext(ctx context.Context) context.Context {
-	return ctx
-}
 
 func main() {
 	fmt.Println("🚀 URMS Email Module - New Architecture Test")
@@ -81,7 +59,8 @@ func main() {
 
 	// Инициализируем зависимости
 	ctx := context.Background()
-	logger := &ConsoleLogger{}
+	// Создаем тестовый logger
+	logger := logging.NewTestLogger()
 
 	// Infrastructure layer
 	fmt.Println("🛠️  Initializing dependencies...")

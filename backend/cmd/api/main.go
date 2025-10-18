@@ -198,7 +198,7 @@ func setupIMAPAdapter(cfg *config.Config, logger ports.Logger) ports.EmailGatewa
 		"max_retries", timeoutConfig.MaxRetries)
 
 	// ✅ Используем новый конструктор с поддержкой таймаутов
-	return email.NewIMAPAdapterWithTimeouts(imapConfig, timeoutConfig)
+	return email.NewIMAPAdapterWithTimeouts(imapConfig, timeoutConfig, logger)
 }
 
 // setupEmailService настраивает email сервис
@@ -221,7 +221,7 @@ func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository, l
 		nil, // Пока без MessageProcessor
 		idGenerator,
 		policy,
-		logger, // Используем structured logger вместо ConsoleLogger
+		logger,
 	)
 }
 
@@ -316,11 +316,14 @@ func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
 
 // startBackgroundProcesses запускает фоновые процессы с поддержкой context
 func startBackgroundProcesses(ctx context.Context, cfg *config.Config, deps *Dependencies) {
+	// ✅ ГЕНЕРИРУЕМ correlation ID для фоновых процессов
+	bgCtx := context.WithValue(ctx, ports.CorrelationIDKey, "background-"+generateShortID())
+
 	deps.Logger.Info(ctx, "🔄 Starting background processes...")
 
 	// Запускаем IMAP poller если настроен
 	if cfg.Email.IMAP.PollInterval > 0 {
-		go startIMAPPoller(ctx, cfg, deps)
+		go startIMAPPoller(bgCtx, cfg, deps)
 	}
 
 	deps.Logger.Info(ctx, "✅ Background processes initialized")
@@ -400,4 +403,9 @@ func waitForShutdown(server *http.Server, deps *Dependencies) {
 
 	//log.Printf("✅ Server stopped gracefully")
 	deps.Logger.Info(ctx, "✅ Server stopped gracefully")
+}
+
+// Вспомогательная функция для генерации короткого ID
+func generateShortID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano()%10000)
 }

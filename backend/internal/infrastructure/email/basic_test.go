@@ -5,6 +5,7 @@ import (
 	"time"
 
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
+	"github.com/audetv/urms/internal/infrastructure/logging"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -30,6 +31,9 @@ func TestIMAPAdapterCreation(t *testing.T) {
 
 // TestIMAPAdapterCreationWithTimeouts проверяет создание IMAP адаптера с таймаутами
 func TestIMAPAdapterCreationWithTimeouts(t *testing.T) {
+	// Создаем тестовый logger
+	logger := logging.NewTestLogger()
+
 	config := &imapclient.Config{
 		Server:   "test.server.com",
 		Port:     993,
@@ -50,6 +54,6 @@ func TestIMAPAdapterCreationWithTimeouts(t *testing.T) {
 	}
 
 	// ✅ ИСПРАВЛЕНО: Используем новый конструктор с таймаутами
-	adapter := NewIMAPAdapter(config, timeoutConfig)
+	adapter := NewIMAPAdapter(config, timeoutConfig, logger)
 	assert.NotNil(t, adapter, "IMAPAdapter with timeouts should be created")
 }
