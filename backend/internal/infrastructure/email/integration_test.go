@@ -229,3 +229,7 @@ func (l *TestLogger) Debug(ctx context.Context, msg string, fields ...interface{
 func (l *TestLogger) Info(ctx context.Context, msg string, fields ...interface{})  {}
 func (l *TestLogger) Warn(ctx context.Context, msg string, fields ...interface{})  {}
 func (l *TestLogger) Error(ctx context.Context, msg string, fields ...interface{}) {}
+
+func (l *TestLogger) WithContext(ctx context.Context) context.Context {
+	return ctx
+}

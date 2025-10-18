@@ -75,6 +75,9 @@ type ServerConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`  // debug, info, warn, error
 	Format string `yaml:"format"` // json, text
+	// ✅ NEW: Добавляем дополнительные опции
+	EnableCallerInfo bool `yaml:"enable_caller_info"` // Включать информацию о вызывающем коде
+	EnableColors     bool `yaml:"enable_colors"`      // Цвета в console output
 }
 
 // LoadConfig загружает конфигурацию из environment variables

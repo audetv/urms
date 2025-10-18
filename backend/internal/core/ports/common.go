@@ -4,21 +4,25 @@ import (
 	"context"
 	"time"
 
-	"github.com/audetv/urms/internal/core/domain" // Добавляем импорт domain
+	"github.com/audetv/urms/internal/core/domain"
 )
 
-// HealthChecker общий интерфейс для проверки здоровья сервисов
-// type HealthChecker interface {
-// 	HealthCheck(ctx context.Context) error
-// }
-
-// Logger интерфейс для логирования
+// Logger определяет контракт для системы логирования
 type Logger interface {
 	Debug(ctx context.Context, msg string, fields ...interface{})
 	Info(ctx context.Context, msg string, fields ...interface{})
 	Warn(ctx context.Context, msg string, fields ...interface{})
 	Error(ctx context.Context, msg string, fields ...interface{})
+	WithContext(ctx context.Context) context.Context
 }
+
+// CorrelationKeyType тип для ключа correlation ID в context
+type CorrelationKeyType string
+
+const (
+	// CorrelationIDKey ключ для хранения correlation ID в context
+	CorrelationIDKey CorrelationKeyType = "correlation_id"
+)
 
 // DomainIDGenerator адаптер для доменного IDGenerator
 // Реализует domain.IDGenerator из domain слоя

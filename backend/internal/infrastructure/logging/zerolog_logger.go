@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/audetv/urms/internal/core/ports"
@@ -44,30 +45,46 @@ func NewZerologLogger(level string, format string) *ZerologLogger {
 }
 
 // getCallerInfo возвращает информацию о вызывающем коде
+// 🔧 ИСПРАВЛЕННЫЙ МЕТОД: getCallerInfo возвращает правильную информацию о вызывающем коде
 func (l *ZerologLogger) getCallerInfo() string {
-	// Пропускаем 4 кадра: getCallerInfo -> wrapper -> actual log method -> caller
-	pc, file, line, ok := runtime.Caller(4)
-	if !ok {
+	// Пропускаем кадры чтобы добраться до реального вызывающего кода
+	pc := make([]uintptr, 10)
+	n := runtime.Callers(3, pc) // Начинаем с 3 кадра
+	if n == 0 {
 		return "unknown:0"
 	}
 
-	// Извлекаем имя функции
-	fn := runtime.FuncForPC(pc)
-	funcName := "unknown"
-	if fn != nil {
-		funcName = fn.Name()
-	}
+	pc = pc[:n]
+	frames := runtime.CallersFrames(pc)
 
-	// Укорачиваем путь файла
-	shortFile := file
-	for i := len(file) - 1; i > 0; i-- {
-		if file[i] == '/' {
-			shortFile = file[i+1:]
+	for {
+		frame, more := frames.Next()
+
+		// Пропускаем системные и logging файлы
+		if !strings.Contains(frame.File, "runtime/") &&
+			!strings.Contains(frame.File, "zerolog") &&
+			!strings.Contains(frame.File, "logging/") {
+			// Укорачиваем путь файла
+			shortFile := frame.File
+			if idx := strings.LastIndex(frame.File, "/"); idx != -1 {
+				shortFile = frame.File[idx+1:]
+			}
+
+			// Укорачиваем имя функции
+			funcName := frame.Function
+			if idx := strings.LastIndex(frame.Function, "/"); idx != -1 {
+				funcName = frame.Function[idx+1:]
+			}
+
+			return shortFile + ":" + funcName + ":" + string(rune(frame.Line))
+		}
+
+		if !more {
 			break
 		}
 	}
 
-	return shortFile + ":" + funcName + ":" + string(rune(line))
+	return "unknown:0"
 }
 
 // getRequestID извлекает correlation ID из context
@@ -130,12 +147,13 @@ func (l *ZerologLogger) Error(ctx context.Context, msg string, fields ...interfa
 }
 
 // addFields добавляет structured fields к логгеру
+// 🔧 ИСПРАВЛЕННЫЙ МЕТОД: addFields - убрано дублирование полей
 func (l *ZerologLogger) addFields(logger *zerolog.Event, fields ...interface{}) {
 	if len(fields) == 0 {
 		return
 	}
 
-	// Обрабатываем fields в формате key-value pairs
+	// Обрабатываем пары key-value без дублирования
 	for i := 0; i < len(fields)-1; i += 2 {
 		if key, ok := fields[i].(string); ok {
 			logger.Interface(key, fields[i+1])

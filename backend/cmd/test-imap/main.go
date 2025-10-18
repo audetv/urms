@@ -36,6 +36,10 @@ func (l *ConsoleLogger) Error(ctx context.Context, msg string, fields ...interfa
 	fmt.Printf("❌ [ERROR] %s %v\n", msg, fields)
 }
 
+func (l *ConsoleLogger) WithContext(ctx context.Context) context.Context {
+	return ctx
+}
+
 func main() {
 	fmt.Println("🚀 URMS Email Module - New Architecture Test")
 	fmt.Println("============================================")

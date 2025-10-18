@@ -21,6 +21,7 @@ import (
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
 	"github.com/audetv/urms/internal/infrastructure/health"
 	httphandler "github.com/audetv/urms/internal/infrastructure/http"
+	"github.com/audetv/urms/internal/infrastructure/logging"
 	persistence "github.com/audetv/urms/internal/infrastructure/persistence/email"
 	"github.com/audetv/urms/internal/infrastructure/persistence/email/postgres"
 	"github.com/jmoiron/sqlx"
@@ -34,41 +35,49 @@ func main() {
 		log.Fatalf("❌ Failed to load configuration: %v", err)
 	}
 
-	log.Printf("🚀 Starting URMS-OS API Server")
-	log.Printf("📋 Configuration:")
-	log.Printf("   Database: %s", cfg.Database.Provider)
-	log.Printf("   Server Port: %d", cfg.Server.Port)
-	log.Printf("   Logging Level: %s", cfg.Logging.Level)
-	log.Printf("   IMAP Timeouts: Connect=%v, Fetch=%v, Operation=%v",
-		cfg.Email.IMAP.ConnectTimeout, cfg.Email.IMAP.FetchTimeout, cfg.Email.IMAP.OperationTimeout)
-	log.Printf("   IMAP Pagination: PageSize=%d, MaxMessages=%d",
-		cfg.Email.IMAP.PageSize, cfg.Email.IMAP.MaxMessagesPerPoll)
+	// ✅ NEW: Создаем logger сразу для main
+	logger := logging.NewZerologLogger(cfg.Logging.Level, cfg.Logging.Format)
+	ctx := context.Background()
+
+	logger.Info(ctx, "🚀 Starting URMS-OS API Server")
+	logger.Info(ctx, "📋 Configuration",
+		"database", cfg.Database.Provider,
+		"server_port", cfg.Server.Port,
+		"logging_level", cfg.Logging.Level,
+		"imap_connect_timeout", cfg.Email.IMAP.ConnectTimeout,
+		"imap_fetch_timeout", cfg.Email.IMAP.FetchTimeout,
+		"imap_operation_timeout", cfg.Email.IMAP.OperationTimeout,
+		"imap_page_size", cfg.Email.IMAP.PageSize,
+		"imap_max_messages", cfg.Email.IMAP.MaxMessagesPerPoll)
 
 	// Инициализируем зависимости
-	dependencies, err := setupDependencies(cfg)
+	dependencies, err := setupDependencies(cfg, logger) // ✅ ПЕРЕДАЕМ logger
 	if err != nil {
-		log.Fatalf("❌ Failed to setup dependencies: %v", err)
+		logger.Error(ctx, "❌ Failed to setup dependencies", "error", err)
+		os.Exit(1)
 	}
 
 	// Запускаем миграции если используется PostgreSQL
 	if cfg.Database.Provider == "postgres" {
 		if err := runMigrations(cfg.Database.Postgres.DSN); err != nil {
-			log.Fatalf("❌ Database migrations failed: %v", err)
+			logger.Error(ctx, "❌ Database migrations failed", "error", err)
+			os.Exit(1)
 		}
-		log.Printf("✅ Database migrations completed")
+		logger.Info(ctx, "✅ Database migrations completed")
 	}
 
 	// Создаем HTTP сервер
 	server := setupHTTPServer(cfg, dependencies)
 
 	// Запускаем фоновые процессы
-	startBackgroundProcesses(context.Background(), cfg, dependencies)
+	startBackgroundProcesses(ctx, cfg, dependencies)
 
 	// Запускаем сервер
 	go func() {
-		log.Printf("🌐 Starting HTTP server on :%d", cfg.Server.Port)
+		logger.Info(ctx, "🌐 Starting HTTP server", "port", cfg.Server.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ HTTP server failed: %v", err)
+			logger.Error(ctx, "❌ HTTP server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -82,23 +91,30 @@ type Dependencies struct {
 	EmailService     *services.EmailService
 	HealthAggregator ports.HealthAggregator
 	EmailGateway     ports.EmailGateway
+	Logger           ports.Logger // ✅ ДОБАВЛЯЕМ logger в зависимости
 }
 
 // setupDependencies инициализирует все зависимости приложения
-func setupDependencies(cfg *config.Config) (*Dependencies, error) {
-	deps := &Dependencies{}
+func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, error) {
+	deps := &Dependencies{
+		Logger: logger, // ✅ СОХРАНЯЕМ logger в зависимости
+	}
+
+	logger.Info(context.Background(), "🛠️ Initializing dependencies")
 
 	// Инициализируем базу данных если используется PostgreSQL
 	if cfg.Database.Provider == "postgres" {
 		db, err := setupDatabase(cfg.Database.Postgres)
 		if err != nil {
+			logger.Error(context.Background(), "Failed to setup database", "error", err)
 			return nil, fmt.Errorf("failed to setup database: %w", err)
 		}
 		deps.DB = db
+		logger.Info(context.Background(), "✅ Connected to PostgreSQL database")
 	}
 
 	// Инициализируем IMAP адаптер с новой конфигурацией таймаутов
-	deps.EmailGateway = setupIMAPAdapter(cfg)
+	deps.EmailGateway = setupIMAPAdapter(cfg, logger) // ✅ ПЕРЕДАЕМ logger
 
 	// Инициализируем email репозиторий
 	emailRepo, err := persistence.NewEmailRepository(
@@ -106,14 +122,17 @@ func setupDependencies(cfg *config.Config) (*Dependencies, error) {
 		deps.DB,
 	)
 	if err != nil {
+		logger.Error(context.Background(), "Failed to create email repository", "error", err)
 		return nil, fmt.Errorf("failed to create email repository: %w", err)
 	}
 
-	// Инициализируем email сервис
-	deps.EmailService = setupEmailService(deps.EmailGateway, emailRepo)
+	// ✅ NEW: Передаем logger в email service
+	deps.EmailService = setupEmailService(deps.EmailGateway, emailRepo, logger)
 
 	// Инициализируем health checks
 	deps.HealthAggregator = setupHealthChecks(deps.EmailGateway, deps.DB)
+
+	logger.Info(context.Background(), "✅ Dependencies initialized successfully")
 
 	return deps, nil
 }
@@ -130,13 +149,12 @@ func setupDatabase(cfg config.PostgresConfig) (*sqlx.DB, error) {
 	db.SetMaxIdleConns(cfg.MaxIdleConns)
 	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 
-	log.Printf("✅ Connected to PostgreSQL database")
-
+	// ✅ LOG: Убираем log.Printf, логируем в вызывающем коде
 	return db, nil
 }
 
 // setupIMAPAdapter настраивает IMAP адаптер с поддержкой таймаутов
-func setupIMAPAdapter(cfg *config.Config) ports.EmailGateway {
+func setupIMAPAdapter(cfg *config.Config, logger ports.Logger) ports.EmailGateway { // ✅ ДОБАВЛЯЕМ logger параметр
 	// Создаем конфигурацию IMAP клиента
 	imapConfig := &imapclient.Config{
 		Server:   cfg.Email.IMAP.Server,
@@ -169,21 +187,22 @@ func setupIMAPAdapter(cfg *config.Config) ports.EmailGateway {
 		RetryDelay:       cfg.Email.IMAP.RetryDelay,
 	}
 
-	log.Printf("🔧 IMAP Adapter configured with timeouts:")
-	log.Printf("   - Connect: %v", timeoutConfig.ConnectTimeout)
-	log.Printf("   - Login: %v", timeoutConfig.LoginTimeout)
-	log.Printf("   - Fetch: %v", timeoutConfig.FetchTimeout)
-	log.Printf("   - Operation: %v", timeoutConfig.OperationTimeout)
-	log.Printf("   - Page Size: %d", timeoutConfig.PageSize)
-	log.Printf("   - Max Messages: %d", timeoutConfig.MaxMessages)
-	log.Printf("   - Max Retries: %d", timeoutConfig.MaxRetries)
+	// ✅ ЗАМЕНЯЕМ старые log.Printf на structured logging
+	logger.Info(context.Background(), "🔧 IMAP Adapter configured with timeouts",
+		"connect_timeout", timeoutConfig.ConnectTimeout,
+		"login_timeout", timeoutConfig.LoginTimeout,
+		"fetch_timeout", timeoutConfig.FetchTimeout,
+		"operation_timeout", timeoutConfig.OperationTimeout,
+		"page_size", timeoutConfig.PageSize,
+		"max_messages", timeoutConfig.MaxMessages,
+		"max_retries", timeoutConfig.MaxRetries)
 
 	// ✅ Используем новый конструктор с поддержкой таймаутов
 	return email.NewIMAPAdapterWithTimeouts(imapConfig, timeoutConfig)
 }
 
 // setupEmailService настраивает email сервис
-func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository) *services.EmailService {
+func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository, logger ports.Logger) *services.EmailService {
 	// Создаем политику обработки email
 	policy := domain.EmailProcessingPolicy{
 		ReadOnlyMode:   true, // Для начала используем read-only режим
@@ -194,11 +213,16 @@ func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository) *
 
 	// Используем существующую реализацию из infrastructure
 	idGenerator := id.NewUUIDGenerator()
-	// TODO: Добавить реальный и Logger
-	// Временно используем заглушки из domain пакета
-	logger := &services.ConsoleLogger{}
 
-	return services.NewEmailService(gateway, repo, nil, idGenerator, policy, logger)
+	// ✅ NEW: Используем переданный structured logger
+	return services.NewEmailService(
+		gateway,
+		repo,
+		nil, // Пока без MessageProcessor
+		idGenerator,
+		policy,
+		logger, // Используем structured logger вместо ConsoleLogger
+	)
 }
 
 // setupHealthChecks настраивает систему health checks
@@ -292,23 +316,26 @@ func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
 
 // startBackgroundProcesses запускает фоновые процессы с поддержкой context
 func startBackgroundProcesses(ctx context.Context, cfg *config.Config, deps *Dependencies) {
-	log.Printf("🔄 Starting background processes...")
+	deps.Logger.Info(ctx, "🔄 Starting background processes...")
 
 	// Запускаем IMAP poller если настроен
 	if cfg.Email.IMAP.PollInterval > 0 {
 		go startIMAPPoller(ctx, cfg, deps)
 	}
 
-	log.Printf("✅ Background processes initialized")
+	deps.Logger.Info(ctx, "✅ Background processes initialized")
 }
 
 // startIMAPPoller запускает IMAP poller с поддержкой context и таймаутов
 func startIMAPPoller(ctx context.Context, cfg *config.Config, deps *Dependencies) {
-	log.Printf("📧 Starting IMAP poller with interval: %v", cfg.Email.IMAP.PollInterval)
-	log.Printf("   Timeout configuration active:")
-	log.Printf("   - Fetch: %v", cfg.Email.IMAP.FetchTimeout)
-	log.Printf("   - Operation: %v", cfg.Email.IMAP.OperationTimeout)
-	log.Printf("   - Page Size: %d", cfg.Email.IMAP.PageSize)
+	// Создаем context для логирования в poller
+	pollerCtx := context.WithValue(ctx, ports.CorrelationIDKey, "imap-poller")
+
+	deps.Logger.Info(pollerCtx, "📧 Starting IMAP poller",
+		"interval", cfg.Email.IMAP.PollInterval,
+		"fetch_timeout", cfg.Email.IMAP.FetchTimeout,
+		"operation_timeout", cfg.Email.IMAP.OperationTimeout,
+		"page_size", cfg.Email.IMAP.PageSize)
 
 	ticker := time.NewTicker(cfg.Email.IMAP.PollInterval)
 	defer ticker.Stop()
@@ -316,20 +343,20 @@ func startIMAPPoller(ctx context.Context, cfg *config.Config, deps *Dependencies
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("🛑 IMAP poller stopped")
+			deps.Logger.Info(pollerCtx, "🛑 IMAP poller stopped")
 			return
 		case <-ticker.C:
-			log.Printf("🔄 IMAP poller running scheduled check with timeout protection...")
+			deps.Logger.Info(pollerCtx, "🔄 IMAP poller running scheduled check with timeout protection...")
 
 			// Создаем контекст с таймаутом операции
 			pollCtx, cancel := context.WithTimeout(ctx, cfg.Email.IMAP.OperationTimeout)
 
 			startTime := time.Now()
 			if err := deps.EmailService.ProcessIncomingEmails(pollCtx); err != nil {
-				log.Printf("❌ IMAP poller error: %v", err)
+				deps.Logger.Error(pollCtx, "❌ IMAP poller error", "error", err)
 			} else {
 				duration := time.Since(startTime)
-				log.Printf("✅ IMAP poller completed successfully in %v", duration)
+				deps.Logger.Info(pollCtx, "✅ IMAP poller completed successfully", "duration", duration)
 			}
 
 			cancel() // Освобождаем ресурсы context
@@ -354,14 +381,16 @@ func waitForShutdown(server *http.Server, deps *Dependencies) {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Printf("🛑 Shutting down server...")
+	// log.Printf("🛑 Shutting down server...")
+	deps.Logger.Info(context.Background(), "🛑 Shutting down server...")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("❌ Server shutdown failed: %v", err)
+		// log.Printf("❌ Server shutdown failed: %v", err)
+		deps.Logger.Error(ctx, "❌ Server shutdown failed", "error", err)
 	}
 
 	// Закрываем соединения с БД
@@ -369,5 +398,6 @@ func waitForShutdown(server *http.Server, deps *Dependencies) {
 		deps.DB.Close()
 	}
 
-	log.Printf("✅ Server stopped gracefully")
+	//log.Printf("✅ Server stopped gracefully")
+	deps.Logger.Info(ctx, "✅ Server stopped gracefully")
 }

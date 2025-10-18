@@ -156,6 +156,11 @@ func (m *MockLogger) Error(ctx context.Context, msg string, fields ...interface{
 	m.Called(ctx, msg, fields)
 }
 
+func (m *MockLogger) WithContext(ctx context.Context) context.Context {
+	args := m.Called(ctx)
+	return args.Get(0).(context.Context)
+}
+
 type MockIDGenerator struct {
 	mock.Mock
 }

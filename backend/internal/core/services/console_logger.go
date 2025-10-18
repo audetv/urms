@@ -10,3 +10,7 @@ func (l *ConsoleLogger) Debug(ctx context.Context, msg string, fields ...interfa
 func (l *ConsoleLogger) Info(ctx context.Context, msg string, fields ...interface{})  {}
 func (l *ConsoleLogger) Warn(ctx context.Context, msg string, fields ...interface{})  {}
 func (l *ConsoleLogger) Error(ctx context.Context, msg string, fields ...interface{}) {}
+
+func (l *ConsoleLogger) WithContext(ctx context.Context) context.Context {
+	return ctx
+}

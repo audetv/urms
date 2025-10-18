@@ -40,12 +40,19 @@ func NewEmailService(
 
 // ProcessIncomingEmails обрабатывает входящие email сообщения
 func (s *EmailService) ProcessIncomingEmails(ctx context.Context) error {
-	s.logger.Info(ctx, "Starting incoming email processing")
+	s.logger.Info(ctx, "Starting incoming email processing",
+		"operation", "process_incoming_emails",
+		"read_only_mode", s.policy.ReadOnlyMode)
 
 	// Проверяем соединение
 	if err := s.gateway.HealthCheck(ctx); err != nil {
+		s.logger.Error(ctx, "Email gateway health check failed",
+			"operation", "health_check",
+			"error", err.Error())
 		return fmt.Errorf("email gateway health check failed: %w", err)
 	}
+
+	s.logger.Debug(ctx, "Email gateway health check successful")
 
 	// Критерии для выборки сообщений
 	criteria := ports.FetchCriteria{
@@ -55,27 +62,56 @@ func (s *EmailService) ProcessIncomingEmails(ctx context.Context) error {
 		UnseenOnly: true,
 	}
 
+	s.logger.Debug(ctx, "Fetching messages with criteria",
+		"since", criteria.Since,
+		"mailbox", criteria.Mailbox,
+		"limit", criteria.Limit,
+		"unseen_only", criteria.UnseenOnly)
+
 	// Получаем сообщения из email провайдера
 	messages, err := s.gateway.FetchMessages(ctx, criteria)
 	if err != nil {
+		s.logger.Error(ctx, "Failed to fetch messages from gateway",
+			"operation", "fetch_messages",
+			"error", err.Error())
 		return fmt.Errorf("failed to fetch messages: %w", err)
 	}
 
-	s.logger.Info(ctx, "Fetched messages for processing", "count", len(messages))
+	s.logger.Info(ctx, "Successfully fetched messages for processing",
+		"message_count", len(messages),
+		"operation", "fetch_messages")
 
 	// Обрабатываем каждое сообщение
 	processedCount := 0
-	for _, msg := range messages {
-		if err := s.processSingleEmail(ctx, msg); err != nil {
-			s.logger.Error(ctx, "Failed to process email message",
-				"message_id", msg.MessageID, "error", err)
-			continue
+	failedCount := 0
+
+	for i, msg := range messages {
+		select {
+		case <-ctx.Done():
+			s.logger.Warn(ctx, "Email processing cancelled by context",
+				"operation", "process_messages",
+				"processed", processedCount,
+				"failed", failedCount)
+			return ctx.Err()
+		default:
+			if err := s.processSingleEmail(ctx, msg); err != nil {
+				s.logger.Error(ctx, "Failed to process email message",
+					"message_index", i,
+					"message_id", msg.MessageID,
+					"subject", msg.Subject,
+					"error", err.Error())
+				failedCount++
+				continue
+			}
+			processedCount++
 		}
-		processedCount++
 	}
 
 	s.logger.Info(ctx, "Completed email processing",
-		"total", len(messages), "processed", processedCount)
+		"total_messages", len(messages),
+		"processed", processedCount,
+		"failed", failedCount,
+		"success_rate", fmt.Sprintf("%.1f%%", float64(processedCount)/float64(len(messages))*100))
 
 	return nil
 }
@@ -199,26 +235,34 @@ func (s *EmailService) ProcessSingleEmail(ctx context.Context, msg domain.EmailM
 
 // processSingleEmail обрабатывает одно email сообщение
 func (s *EmailService) processSingleEmail(ctx context.Context, msg domain.EmailMessage) error {
-	s.logger.Debug(ctx, "Processing single email",
-		"message_id", msg.MessageID, "subject", msg.Subject)
+	s.logger.Debug(ctx, "Processing single email message",
+		"message_id", msg.MessageID,
+		"subject", msg.Subject,
+		"from", msg.From,
+		"operation", "process_single_email")
 
 	// Проверяем, не было ли сообщение уже обработано
 	existing, err := s.repo.FindByMessageID(ctx, msg.MessageID)
 	if err == nil && existing != nil && existing.Processed {
 		s.logger.Debug(ctx, "Email already processed, skipping",
-			"message_id", msg.MessageID)
+			"message_id", msg.MessageID,
+			"operation", "skip_duplicate")
 		return nil
 	}
 
 	// Проверяем спам-фильтр
 	if msg.IsSpam(s.policy) {
 		s.logger.Info(ctx, "Skipping spam email",
-			"message_id", msg.MessageID, "subject", msg.Subject)
+			"message_id", msg.MessageID,
+			"subject", msg.Subject,
+			"from", msg.From,
+			"operation", "spam_filter")
 		msg.Processed = true
 		msg.ProcessedAt = time.Now()
 		if err := s.repo.Save(ctx, &msg); err != nil {
 			s.logger.Error(ctx, "Failed to save spam email",
-				"message_id", msg.MessageID, "error", err)
+				"message_id", msg.MessageID,
+				"error", err.Error())
 		}
 		return nil
 	}
@@ -226,12 +270,15 @@ func (s *EmailService) processSingleEmail(ctx context.Context, msg domain.EmailM
 	// Проверяем разрешенных отправителей
 	if !msg.IsFromAllowedSender(s.policy) {
 		s.logger.Warn(ctx, "Email from blocked sender",
-			"message_id", msg.MessageID, "from", msg.From)
+			"message_id", msg.MessageID,
+			"from", msg.From,
+			"operation", "blocked_sender")
 		msg.Processed = true
 		msg.ProcessedAt = time.Now()
 		if err := s.repo.Save(ctx, &msg); err != nil {
 			s.logger.Error(ctx, "Failed to save blocked sender email",
-				"message_id", msg.MessageID, "error", err)
+				"message_id", msg.MessageID,
+				"error", err.Error())
 		}
 		return nil
 	}
@@ -243,12 +290,22 @@ func (s *EmailService) processSingleEmail(ctx context.Context, msg domain.EmailM
 	msg.UpdatedAt = time.Now()
 
 	if err := s.repo.Save(ctx, &msg); err != nil {
+		s.logger.Error(ctx, "Failed to save incoming email",
+			"message_id", msg.MessageID,
+			"error", err.Error())
 		return fmt.Errorf("failed to save incoming email: %w", err)
 	}
 
-	// Обрабатываем через процессор
+	s.logger.Debug(ctx, "Successfully saved email to repository",
+		"message_id", msg.MessageID,
+		"operation", "save_repository")
+
+	// Обрабатываем через процессор если он есть
 	if s.processor != nil {
 		if err := s.processor.ProcessIncomingEmail(ctx, msg); err != nil {
+			s.logger.Error(ctx, "Failed to process incoming email",
+				"message_id", msg.MessageID,
+				"error", err.Error())
 			return fmt.Errorf("failed to process incoming email: %w", err)
 		}
 	}
@@ -258,19 +315,14 @@ func (s *EmailService) processSingleEmail(ctx context.Context, msg domain.EmailM
 	msg.ProcessedAt = time.Now()
 	if err := s.repo.Update(ctx, &msg); err != nil {
 		s.logger.Error(ctx, "Failed to mark email as processed",
-			"message_id", msg.MessageID, "error", err)
-	}
-
-	// Помечаем как прочитанное на сервере (если не в read-only режиме)
-	if !s.policy.ReadOnlyMode {
-		if err := s.gateway.MarkAsRead(ctx, []string{msg.MessageID}); err != nil {
-			s.logger.Warn(ctx, "Failed to mark email as read on server",
-				"message_id", msg.MessageID, "error", err)
-		}
+			"message_id", msg.MessageID,
+			"error", err.Error())
 	}
 
 	s.logger.Info(ctx, "Email processed successfully",
-		"message_id", msg.MessageID, "subject", msg.Subject)
+		"message_id", msg.MessageID,
+		"subject", msg.Subject,
+		"operation", "email_processed")
 
 	return nil
 }

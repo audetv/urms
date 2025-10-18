@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/audetv/urms/internal/core/ports"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
 	"github.com/emersion/go-imap"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -107,13 +109,44 @@ func (a *IMAPAdapter) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.ConnectTimeout)
 	defer cancel()
 
+	// ✅ ИСПРАВЛЕНО: Правильное использование zerolog
+	logger := a.getLogger(ctx)
+	logger.Info().
+		Str("operation", operation).
+		Str("server", a.config.Server).
+		Int("port", a.config.Port).
+		Str("timeout", a.timeoutConfig.ConnectTimeout.String()).
+		Msg("Starting IMAP connection")
+
 	return a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		err := a.client.Connect()
 		if err != nil {
+			logger.Error().
+				Str("operation", operation).
+				Str("server", a.config.Server).
+				Err(err).
+				Msg("IMAP connection failed")
 			return NewIMAPError("connect", IMAPErrorConnection, "failed to connect to IMAP server", err)
 		}
+
+		logger.Info().
+			Str("operation", operation).
+			Str("server", a.config.Server).
+			Msg("IMAP connection successful")
 		return nil
 	})
+}
+
+// ✅ NEW: Вспомогательный метод для получения логгера с context
+func (a *IMAPAdapter) getLogger(ctx context.Context) *zerolog.Logger {
+	// Временная реализация - в реальной реализации нужно интегрировать ports.Logger
+	logger := zerolog.Ctx(ctx)
+	if logger.GetLevel() == zerolog.Disabled {
+		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+		defaultLogger := zerolog.New(consoleWriter).With().Timestamp().Logger()
+		return &defaultLogger
+	}
+	return logger
 }
 
 // Disconnect закрывает соединение
@@ -162,19 +195,27 @@ func (a *IMAPAdapter) FetchMessages(ctx context.Context, criteria ports.FetchCri
 
 // fetchMessagesWithPagination - внутренний метод с поддержкой пагинации
 func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	logger := a.getLogger(ctx)
+
 	// ВЫБИРАЕМ почтовый ящик перед поиском
 	if err := a.SelectMailbox(ctx, criteria.Mailbox); err != nil {
+		logger.Error().
+			Str("operation", "select_mailbox").
+			Str("mailbox", criteria.Mailbox).
+			Err(err).
+			Msg("Failed to select mailbox")
 		return nil, NewIMAPError("select_mailbox", IMAPErrorServer, fmt.Sprintf("failed to select mailbox %s", criteria.Mailbox), err)
 	}
 
-	log.Info().
+	logger.Info().
+		Str("operation", "fetch_pagination").
 		Str("mailbox", criteria.Mailbox).
 		Uint32("since_uid", criteria.SinceUID).
 		Time("since", criteria.Since).
 		Int("page_size", a.timeoutConfig.PageSize).
 		Msg("Starting IMAP pagination")
 
-		// ✅ ИСПРАВЛЕНО: Для первого запуска используем альтернативный подход
+	// ✅ ИСПРАВЛЕНО: Для первого запуска используем альтернативный подход
 	if criteria.SinceUID == 0 {
 		return a.fetchInitialMessages(ctx, criteria)
 	}
@@ -192,11 +233,17 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	for hasMoreMessages {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err() // Уважаем cancellation
+			logger.Warn().
+				Str("operation", "fetch_pagination").
+				Int("processed", processedCount).
+				Int("total_pages", pageNumber-1).
+				Msg("IMAP pagination cancelled by context")
+			return nil, ctx.Err()
 		default:
 			// Проверяем лимит сообщений
 			if processedCount >= a.timeoutConfig.MaxMessages {
-				log.Info().
+				logger.Info().
+					Str("operation", "fetch_pagination").
 					Int("processed", processedCount).
 					Int("max_messages", a.timeoutConfig.MaxMessages).
 					Msg("Reached maximum messages per poll, stopping pagination")
@@ -207,24 +254,32 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			// Обновляем критерии для следующей страницы
 			imapCriteria.Uid = a.createUIDSeqSet(lastUID, a.timeoutConfig.PageSize)
 
-			log.Debug().
+			logger.Debug().
+				Str("operation", "fetch_pagination").
 				Int("page", pageNumber).
 				Uint32("last_uid", lastUID).
 				Msg("Searching for messages with UID criteria")
 
 			messageUIDs, err := a.client.SearchMessages(imapCriteria)
 			if err != nil {
+				logger.Error().
+					Str("operation", "fetch_pagination").
+					Int("page", pageNumber).
+					Err(err).
+					Msg("Failed to search messages")
 				return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search messages", err)
 			}
 
-			log.Debug().
+			logger.Debug().
+				Str("operation", "fetch_pagination").
 				Int("page", pageNumber).
 				Int("found_uids", len(messageUIDs)).
 				Msg("IMAP search results")
 
 			if len(messageUIDs) == 0 {
 				// Больше нет сообщений
-				log.Info().
+				logger.Info().
+					Str("operation", "fetch_pagination").
 					Int("total_pages", pageNumber).
 					Int("total_messages", len(allMessages)).
 					Msg("No more messages found, ending pagination")
@@ -235,6 +290,11 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			// Получаем сообщения текущей страницы
 			batchMessages, err := a.fetchMessageBatch(ctx, messageUIDs)
 			if err != nil {
+				logger.Error().
+					Str("operation", "fetch_pagination").
+					Int("page", pageNumber).
+					Err(err).
+					Msg("Failed to fetch message batch")
 				return nil, err
 			}
 
@@ -248,7 +308,8 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			}
 
 			// Логируем прогресс
-			log.Info().
+			logger.Info().
+				Str("operation", "fetch_pagination").
 				Int("page", pageNumber).
 				Int("batch_size", len(batchMessages)).
 				Int("total_processed", processedCount).
@@ -258,7 +319,8 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 			// Если получили меньше сообщений, чем размер страницы, значит это последняя страница
 			if len(batchMessages) < a.timeoutConfig.PageSize {
 				hasMoreMessages = false
-				log.Info().
+				logger.Info().
+					Str("operation", "fetch_pagination").
 					Int("final_page", pageNumber).
 					Int("total_messages", len(allMessages)).
 					Msg("Reached last page of messages")
@@ -268,7 +330,8 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 		}
 	}
 
-	log.Info().
+	logger.Info().
+		Str("operation", "fetch_pagination").
 		Int("total_messages", len(allMessages)).
 		Int("total_pages", pageNumber-1).
 		Msg("IMAP pagination completed")
@@ -278,6 +341,8 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 
 // fetchMessageBatch получает пачку сообщений по UID с таймаутом
 func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint32) ([]domain.EmailMessage, error) {
+	logger := a.getLogger(ctx)
+
 	// ✅ ДОБАВЛЕНО: Создаем контекст с таймаутом для batch операций
 	batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -288,7 +353,8 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 		seqSet.AddNum(uid)
 	}
 
-	log.Debug().
+	logger.Debug().
+		Str("operation", "fetch_batch").
 		Int("message_count", len(messageUIDs)).
 		Msg("Fetching message batch")
 
@@ -296,6 +362,10 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 	fetchItems := imapclient.CreateFetchItems(false) // Без тела для начала
 	messagesChan, err := a.client.FetchMessages(seqSet, fetchItems)
 	if err != nil {
+		logger.Error().
+			Str("operation", "fetch_batch").
+			Err(err).
+			Msg("Failed to fetch messages")
 		return nil, NewIMAPError("fetch_messages", IMAPErrorProtocol, "failed to fetch messages", err)
 	}
 
@@ -305,7 +375,8 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 		select {
 		case <-batchCtx.Done():
 			// ✅ ДОБАВЛЕНО: Прерываем обработку при таймауте
-			log.Warn().
+			logger.Warn().
+				Str("operation", "fetch_batch").
 				Err(batchCtx.Err()).
 				Int("processed", len(domainMessages)).
 				Msg("Batch processing interrupted by timeout")
@@ -313,14 +384,19 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 		default:
 			domainMsg, err := a.convertToDomainMessage(msg)
 			if err != nil {
-				log.Warn().Err(err).Uint32("uid", msg.Uid).Msg("Failed to convert IMAP message")
+				logger.Warn().
+					Str("operation", "fetch_batch").
+					Uint32("uid", msg.Uid).
+					Err(err).
+					Msg("Failed to convert IMAP message")
 				continue
 			}
 			domainMessages = append(domainMessages, domainMsg)
 		}
 	}
 
-	log.Debug().
+	logger.Debug().
+		Str("operation", "fetch_batch").
 		Int("converted_messages", len(domainMessages)).
 		Msg("Message batch conversion completed")
 
@@ -329,7 +405,10 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 
 // fetchInitialMessages получает сообщения для первого запуска (без UID)
 func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
-	log.Info().Msg("Performing initial message fetch without UID tracking")
+	logger := a.getLogger(ctx)
+	logger.Info().
+		Str("operation", "fetch_initial").
+		Msg("Performing initial message fetch without UID tracking")
 
 	// Используем поиск по дате и статусу
 	imapCriteria := &imap.SearchCriteria{}
@@ -344,10 +423,15 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
+		logger.Error().
+			Str("operation", "fetch_initial").
+			Err(err).
+			Msg("Failed to search initial messages")
 		return nil, NewIMAPError("search_messages", IMAPErrorProtocol, "failed to search initial messages", err)
 	}
 
-	log.Info().
+	logger.Info().
+		Str("operation", "fetch_initial").
 		Int("found_messages", len(messageUIDs)).
 		Time("since", imapCriteria.Since).
 		Msg("Initial IMAP search completed")
@@ -359,7 +443,8 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 	// ✅ УВЕЛИЧИВАЕМ ОГРАНИЧЕНИЕ: Берем только первые 10 сообщений для тестирования
 	if len(messageUIDs) > 10 {
 		messageUIDs = messageUIDs[:10]
-		log.Info().
+		logger.Info().
+			Str("operation", "fetch_initial").
 			Int("limited_to", 10).
 			Msg("Limited initial message fetch for testing")
 	}
