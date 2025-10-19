@@ -95,7 +95,9 @@ func (t *Ticket) AddMessage(authorID, content string, messageType MessageType) e
 	t.UpdatedAt = time.Now()
 
 	// Автоматически добавляем автора в участники если его еще нет
-	t.addParticipantIfNotExists(authorID, RoleParticipant)
+	if messageType != MessageTypeSystem { // Системные сообщения не создают участников
+		t.addParticipantIfNotExists(authorID, RoleParticipant)
+	}
 
 	return nil
 }
@@ -124,7 +126,7 @@ func (t *Ticket) ChangeStatus(newStatus TicketStatus) error {
 	}
 
 	// Добавляем системное сообщение о смене статуса
-	systemMessage := fmt.Sprintf("Статус изменен: %s → %s", oldStatus.Russian(), newStatus.Russian())
+	systemMessage := fmt.Sprintf("Статус изменен: %s → %s", oldStatus.DisplayName(), newStatus.DisplayName())
 	t.AddMessage("system", systemMessage, MessageTypeSystem)
 
 	return nil
@@ -139,13 +141,10 @@ func (t *Ticket) Assign(assigneeID string) error {
 	t.AssigneeID = assigneeID
 	t.UpdatedAt = time.Now()
 
-	// Добавляем исполнителя в участники
+	// Добавляем исполнителя в участники (если его еще нет)
 	t.addParticipantIfNotExists(assigneeID, RoleAssignee)
 
-	// Системное сообщение о назначении
-	message := fmt.Sprintf("Исполнитель назначен: %s", assigneeID)
-	t.AddMessage("system", message, MessageTypeSystem)
-
+	// НЕ добавляем системное сообщение здесь - это будет делать сервис при необходимости
 	return nil
 }
 

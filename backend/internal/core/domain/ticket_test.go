@@ -62,6 +62,7 @@ func TestTicket_Assign(t *testing.T) {
 
 	assert.Equal(t, "user-789", ticket.AssigneeID)
 	assert.Len(t, ticket.Participants, 2) // Reporter + Assignee
+	// Теперь системное сообщение не создается автоматически в domain
 }
 
 func TestTicket_AddTag(t *testing.T) {
