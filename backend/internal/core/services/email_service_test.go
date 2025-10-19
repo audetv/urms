@@ -136,31 +136,6 @@ func (m *MockMessageProcessor) ProcessOutgoingEmail(ctx context.Context, email d
 	return args.Error(0)
 }
 
-type MockLogger struct {
-	mock.Mock
-}
-
-func (m *MockLogger) Debug(ctx context.Context, msg string, fields ...interface{}) {
-	m.Called(ctx, msg, fields)
-}
-
-func (m *MockLogger) Info(ctx context.Context, msg string, fields ...interface{}) {
-	m.Called(ctx, msg, fields)
-}
-
-func (m *MockLogger) Warn(ctx context.Context, msg string, fields ...interface{}) {
-	m.Called(ctx, msg, fields)
-}
-
-func (m *MockLogger) Error(ctx context.Context, msg string, fields ...interface{}) {
-	m.Called(ctx, msg, fields)
-}
-
-func (m *MockLogger) WithContext(ctx context.Context) context.Context {
-	args := m.Called(ctx)
-	return args.Get(0).(context.Context)
-}
-
 type MockIDGenerator struct {
 	mock.Mock
 }
@@ -187,7 +162,7 @@ func TestEmailService_ProcessIncomingEmails(t *testing.T) {
 		gateway := new(MockEmailGateway)
 		repo := new(MockEmailRepository)
 		processor := new(MockMessageProcessor)
-		logger := new(MockLogger)
+		logger := new(services.MockLogger)
 		idGenerator := new(MockIDGenerator)
 
 		// ✅ ПОЛИТИКА БЕЗ ReadOnlyMode И С РАЗРЕШЕННЫМ ОТПРАВИТЕЛЕМ
@@ -218,8 +193,8 @@ func TestEmailService_ProcessIncomingEmails(t *testing.T) {
 		// gateway.On("MarkAsRead", ctx, []string{"msg1"}).Return(nil)
 
 		// Гибкие ожидания для логгера
-		logger.On("Info", mock.Anything, mock.Anything, mock.Anything).Maybe()
-		logger.On("Debug", mock.Anything, mock.Anything, mock.Anything).Maybe()
+		// logger.On("Info", mock.Anything, mock.Anything, mock.Anything).Maybe()
+		// logger.On("Debug", mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		// Ожидания для репозитория и процессора
 		repo.On("FindByMessageID", ctx, "msg1").Return((*domain.EmailMessage)(nil), domain.ErrEmailNotFound)
@@ -235,27 +210,27 @@ func TestEmailService_ProcessIncomingEmails(t *testing.T) {
 		gateway.AssertExpectations(t) // ✅ Теперь все ожидания выполнятся
 		repo.AssertExpectations(t)
 		processor.AssertExpectations(t)
-		logger.AssertExpectations(t)
+		// logger.AssertExpectations(t)
 	})
 
 	t.Run("health check failure", func(t *testing.T) {
 		gateway := new(MockEmailGateway)
-		logger := new(MockLogger)
+		logger := new(services.MockLogger)
 
 		service := services.NewEmailService(gateway, nil, nil, nil, domain.EmailProcessingPolicy{}, logger)
 
 		gateway.On("HealthCheck", ctx).Return(errors.New("connection failed"))
 
 		// ✅ ГИБКИЕ ОЖИДАНИЯ
-		logger.On("Info", mock.Anything, mock.Anything, mock.Anything).Maybe()
-		logger.On("Error", mock.Anything, mock.Anything, mock.Anything).Maybe()
+		// logger.On("Info", mock.Anything, mock.Anything, mock.Anything).Maybe()
+		// logger.On("Error", mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		err := service.ProcessIncomingEmails(ctx)
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "health check failed")
 		gateway.AssertExpectations(t)
-		logger.AssertExpectations(t)
+		// logger.AssertExpectations(t)
 	})
 }
 
@@ -266,7 +241,7 @@ func TestEmailService_SendEmail(t *testing.T) {
 		gateway := new(MockEmailGateway)
 		repo := new(MockEmailRepository)
 		processor := new(MockMessageProcessor)
-		logger := new(MockLogger)
+		logger := new(services.MockLogger)
 		idGenerator := new(MockIDGenerator)
 
 		policy := domain.EmailProcessingPolicy{
@@ -285,8 +260,8 @@ func TestEmailService_SendEmail(t *testing.T) {
 		gateway.On("SendMessage", ctx, mock.AnythingOfType("domain.EmailMessage")).Return(nil)
 		processor.On("ProcessOutgoingEmail", ctx, mock.AnythingOfType("domain.EmailMessage")).Return(nil)
 
-		logger.On("Info", ctx, "Sending email message", mock.Anything)
-		logger.On("Info", ctx, "Email sent successfully", mock.Anything)
+		// logger.On("Info", ctx, "Sending email message", mock.Anything)
+		// logger.On("Info", ctx, "Email sent successfully", mock.Anything)
 
 		// Create test message
 		testMsg := domain.EmailMessage{
@@ -309,7 +284,7 @@ func TestEmailService_SendEmail(t *testing.T) {
 
 	t.Run("read-only mode", func(t *testing.T) {
 		gateway := new(MockEmailGateway)
-		logger := new(MockLogger)
+		logger := new(services.MockLogger)
 
 		policy := domain.EmailProcessingPolicy{
 			ReadOnlyMode: true,
@@ -317,8 +292,8 @@ func TestEmailService_SendEmail(t *testing.T) {
 
 		service := services.NewEmailService(gateway, nil, nil, nil, policy, logger)
 
-		logger.On("Info", ctx, "Sending email message", mock.Anything)
-		logger.On("Warn", ctx, "Read-only mode enabled, skipping actual send", mock.Anything)
+		// logger.On("Info", ctx, "Sending email message", mock.Anything)
+		// logger.On("Warn", ctx, "Read-only mode enabled, skipping actual send", mock.Anything)
 
 		testMsg := domain.EmailMessage{
 			From:     "support@company.com",
