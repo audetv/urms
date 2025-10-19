@@ -1,28 +1,19 @@
 // internal/core/domain/types.go
 package domain
 
-// TicketStatus представляет статус заявки
-type TicketStatus string
+// TaskSource представляет источник задачи
+type TaskSource string
 
 const (
-	StatusOpen       TicketStatus = "open"        // Открыта
-	StatusInProgress TicketStatus = "in_progress" // В работе
-	StatusResolved   TicketStatus = "resolved"    // Решена
-	StatusClosed     TicketStatus = "closed"      // Закрыта
+	SourceEmail    TaskSource = "email"    // Email
+	SourceTelegram TaskSource = "telegram" // Telegram
+	SourceWebForm  TaskSource = "web_form" // Веб-форма
+	SourceAPI      TaskSource = "api"      // API
+	SourceInternal TaskSource = "internal" // Внутренняя
+	SourceGitHub   TaskSource = "github"   // GitHub (для будущего)
 )
 
-// DisplayName возвращает отображаемое название статуса
-func (s TicketStatus) DisplayName() string {
-	names := map[TicketStatus]string{
-		StatusOpen:       "Открыта",
-		StatusInProgress: "В работе",
-		StatusResolved:   "Решена",
-		StatusClosed:     "Закрыта",
-	}
-	return names[s]
-}
-
-// Priority представляет приоритет заявки
+// Priority представляет приоритет задачи
 type Priority string
 
 const (
@@ -30,28 +21,6 @@ const (
 	PriorityMedium   Priority = "medium"   // Средний
 	PriorityHigh     Priority = "high"     // Высокий
 	PriorityCritical Priority = "critical" // Критический
-)
-
-// DisplayName возвращает отображаемое название приоритета
-func (p Priority) DisplayName() string {
-	names := map[Priority]string{
-		PriorityLow:      "Низкий",
-		PriorityMedium:   "Средний",
-		PriorityHigh:     "Высокий",
-		PriorityCritical: "Критический",
-	}
-	return names[p]
-}
-
-// TicketSource представляет источник заявки
-type TicketSource string
-
-const (
-	SourceEmail    TicketSource = "email"    // Email
-	SourceTelegram TicketSource = "telegram" // Telegram
-	SourceWebForm  TicketSource = "web_form" // Веб-форма
-	SourceAPI      TicketSource = "api"      // API
-	SourceInternal TicketSource = "internal" // Внутренняя
 )
 
 // ParticipantRole представляет роль участника
@@ -72,14 +41,4 @@ const (
 	MessageTypeCustomer MessageType = "customer" // Сообщение от клиента
 	MessageTypeInternal MessageType = "internal" // Внутреннее сообщение
 	MessageTypeSystem   MessageType = "system"   // Системное сообщение
-)
-
-// SubTicketStatus представляет статус подзадачи
-type SubTicketStatus string
-
-const (
-	SubTicketStatusOpen       SubTicketStatus = "open"
-	SubTicketStatusInProgress SubTicketStatus = "in_progress"
-	SubTicketStatusCompleted  SubTicketStatus = "completed"
-	SubTicketStatusCancelled  SubTicketStatus = "cancelled"
 )
