@@ -18,27 +18,27 @@ func (h EmailHeader) String() string {
 // MessagePriority - value object для приоритета сообщения
 type MessagePriority int
 
-const (
-	PriorityLow MessagePriority = iota
-	PriorityNormal
-	PriorityHigh
-	PriorityUrgent
-)
+// const (
+// 	PriorityLow MessagePriority = iota
+// 	PriorityNormal
+// 	PriorityHigh
+// 	PriorityUrgent
+// )
 
-func (p MessagePriority) String() string {
-	switch p {
-	case PriorityLow:
-		return "low"
-	case PriorityNormal:
-		return "normal"
-	case PriorityHigh:
-		return "high"
-	case PriorityUrgent:
-		return "urgent"
-	default:
-		return "normal"
-	}
-}
+// func (p MessagePriority) String() string {
+// 	switch p {
+// 	case PriorityLow:
+// 		return "low"
+// 	case PriorityNormal:
+// 		return "normal"
+// 	case PriorityHigh:
+// 		return "high"
+// 	case PriorityUrgent:
+// 		return "urgent"
+// 	default:
+// 		return "normal"
+// 	}
+// }
 
 // EmailContent - value object для содержимого email
 type EmailContent struct {
