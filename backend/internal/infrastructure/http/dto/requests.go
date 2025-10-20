@@ -104,8 +104,8 @@ type TaskSearchRequest struct {
 	Category   string              `json:"category,omitempty" form:"category"`
 	Tags       []string            `json:"tags,omitempty" form:"tags"`
 	SearchText string              `json:"search_text,omitempty" form:"search_text"`
-	Page       int                 `json:"page,omitempty" form:"page" binding:"min=1"`
-	PageSize   int                 `json:"page_size,omitempty" form:"page_size" binding:"min=1,max=100"`
+	Page       int                 `json:"page,omitempty" form:"page" binding:"omitempty,min=1"`
+	PageSize   int                 `json:"page_size,omitempty" form:"page_size" binding:"omitempty,min=1,max=100"`
 	SortBy     string              `json:"sort_by,omitempty" form:"sort_by"`
 	SortOrder  string              `json:"sort_order,omitempty" form:"sort_order" binding:"omitempty,oneof=asc desc"`
 }
@@ -114,6 +114,6 @@ type CustomerSearchRequest struct {
 	SearchText   string `json:"search_text,omitempty" form:"search_text"`
 	Organization string `json:"organization,omitempty" form:"organization"`
 	Email        string `json:"email,omitempty" form:"email"`
-	Page         int    `json:"page,omitempty" form:"page" binding:"min=1"`
-	PageSize     int    `json:"page_size,omitempty" form:"page_size" binding:"min=1,max=100"`
+	Page         int    `json:"page,omitempty" form:"page" binding:"omitempty,min=1"`
+	PageSize     int    `json:"page_size,omitempty" form:"page_size" binding:"omitempty,min=1,max=100"`
 }

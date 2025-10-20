@@ -132,10 +132,7 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 		return nil, fmt.Errorf("failed to create email repository: %w", err)
 	}
 
-	// ✅ NEW: Передаем logger в email service
-	deps.EmailService = setupEmailService(deps.EmailGateway, emailRepo, logger)
-
-	// ✅ ДОБАВЛЯЕМ: Инициализация Task Management сервисов
+	// ✅ ПЕРВОЕ: Инициализация Task Management сервисов
 	taskRepo := inmemory.NewTaskRepository(logger)
 	customerRepo := inmemory.NewCustomerRepository(logger)
 	userRepo := inmemory.NewUserRepository(logger)
@@ -144,6 +141,15 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 	deps.CustomerService = services.NewCustomerService(customerRepo, taskRepo, logger)
 
 	logger.Info(context.Background(), "✅ Task Management services initialized")
+
+	// ✅ ВТОРОЕ: Теперь передаем уже созданные сервисы в EmailService
+	deps.EmailService = setupEmailServiceWithTaskServices(
+		deps.EmailGateway,
+		emailRepo,
+		deps.TaskService,
+		deps.CustomerService,
+		logger,
+	)
 
 	// Инициализируем health checks
 	deps.HealthAggregator = setupHealthChecks(deps.EmailGateway, deps.DB)
@@ -217,8 +223,14 @@ func setupIMAPAdapter(cfg *config.Config, logger ports.Logger) ports.EmailGatewa
 	return email.NewIMAPAdapterWithTimeouts(imapConfig, timeoutConfig, logger)
 }
 
-// setupEmailService настраивает email сервис
-func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository, logger ports.Logger) *services.EmailService {
+// setupEmailServiceWithTaskServices настраивает email сервис с уже созданными Task сервисами
+func setupEmailServiceWithTaskServices(
+	gateway ports.EmailGateway,
+	repo ports.EmailRepository,
+	taskService ports.TaskService,
+	customerService ports.CustomerService,
+	logger ports.Logger,
+) *services.EmailService {
 	// Создаем политику обработки email
 	policy := domain.EmailProcessingPolicy{
 		ReadOnlyMode:   true, // Для начала используем read-only режим
@@ -230,25 +242,15 @@ func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository, l
 	// Используем существующую реализацию из infrastructure
 	idGenerator := id.NewUUIDGenerator()
 
-	// Инициализация репозиториев (InMemory для разработки)
-	taskRepo := inmemory.NewTaskRepository(logger)
-	customerRepo := inmemory.NewCustomerRepository(logger)
-	userRepo := inmemory.NewUserRepository(logger)
-
-	// Инициализация сервисов
-	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
-	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-
-	// ✅ АКТИВИРУЕМ MessageProcessor
+	// ✅ ИСПОЛЬЗУЕМ уже созданные TaskService и CustomerService
 	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
-	logger.Info(context.Background(), "✅ MessageProcessor activated",
+	logger.Info(context.Background(), "✅ MessageProcessor activated with TaskService integration",
 		"type", "MessageProcessor")
 
-	// ✅ NEW: Используем переданный structured logger
 	return services.NewEmailService(
 		gateway,
 		repo,
-		messageProcessor, // ✅ Теперь передаем реальный процессор вместо nil
+		messageProcessor,
 		idGenerator,
 		policy,
 		logger,

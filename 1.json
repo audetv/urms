@@ -1,0 +1,155 @@
+{
+    "success": true,
+    "data": {
+        "tasks": [
+            {
+                "id": "TASK-1760983157608098854",
+                "type": "support",
+                "subject": "[gcdevelop/grandcanyon] Замена методов и функций (PR #448)",
+                "description": "Заявка создана автоматически из входящего email.\n\nОт: kiipod \u003cnotifications@github.com\u003e\nТема: Re: [gcdevelop/grandcanyon] Замена методов и функций (PR #448)\nДата: 2025-10-20 20:59:17\n\n",
+                "status": "open",
+                "priority": "medium",
+                "category": "general",
+                "tags": [
+                    "email",
+                    "auto-created"
+                ],
+                "reporter_id": "system",
+                "customer_id": "CUST-1760983157608071283",
+                "source": "email",
+                "participants": [
+                    {
+                        "user_id": "system",
+                        "role": "reporter",
+                        "joined_at": "2025-10-20T20:59:17.608098744+03:00"
+                    }
+                ],
+                "history": [
+                    {
+                        "id": "EVT-1760983157608099315",
+                        "type": "created",
+                        "user_id": "system",
+                        "timestamp": "2025-10-20T20:59:17.608099436+03:00",
+                        "message": "Задача создана"
+                    }
+                ],
+                "created_at": "2025-10-20T20:59:17.608098744+03:00",
+                "updated_at": "2025-10-20T20:59:17.608098744+03:00"
+            },
+            {
+                "id": "TASK-1760983277451386205",
+                "type": "support",
+                "subject": "URMS API Test",
+                "description": "Заявка создана автоматически из входящего email.\n\nОт: Алексей Гусев \u003caudetv@gmail.com\u003e\nТема: URMS API Test\nДата: 2025-10-20 21:01:17\n\n",
+                "status": "open",
+                "priority": "medium",
+                "category": "general",
+                "tags": [
+                    "email",
+                    "auto-created"
+                ],
+                "reporter_id": "system",
+                "customer_id": "CUST-1760983277451353353",
+                "source": "email",
+                "participants": [
+                    {
+                        "user_id": "system",
+                        "role": "reporter",
+                        "joined_at": "2025-10-20T21:01:17.451386024+03:00"
+                    }
+                ],
+                "history": [
+                    {
+                        "id": "EVT-1760983277451387046",
+                        "type": "created",
+                        "user_id": "system",
+                        "timestamp": "2025-10-20T21:01:17.451387257+03:00",
+                        "message": "Задача создана"
+                    }
+                ],
+                "created_at": "2025-10-20T21:01:17.451386024+03:00",
+                "updated_at": "2025-10-20T21:01:17.451386024+03:00"
+            },
+            {
+                "id": "TASK-1760983400587313828",
+                "type": "support",
+                "subject": "Тест API: Проблема с доступом",
+                "description": "Не могу зайти в систему, выдает ошибку аутентификации",
+                "status": "open",
+                "priority": "high",
+                "category": "technical",
+                "tags": [],
+                "reporter_id": "system",
+                "customer_id": "test-customer-api",
+                "source": "internal",
+                "participants": [
+                    {
+                        "user_id": "system",
+                        "role": "reporter",
+                        "joined_at": "2025-10-20T21:03:20.587313698+03:00"
+                    }
+                ],
+                "history": [
+                    {
+                        "id": "EVT-1760983400587314920",
+                        "type": "created",
+                        "user_id": "system",
+                        "timestamp": "2025-10-20T21:03:20.587315231+03:00",
+                        "message": "Задача создана"
+                    }
+                ],
+                "created_at": "2025-10-20T21:03:20.587313698+03:00",
+                "updated_at": "2025-10-20T21:03:20.587313698+03:00"
+            },
+            {
+                "id": "TASK-1760984477407488113",
+                "type": "support",
+                "subject": "URMS API Test",
+                "description": "Заявка создана автоматически из входящего email.\n\nОт: Алексей Гусев \u003caudetv@gmail.com\u003e\nТема: Re: URMS API Test\nДата: 2025-10-20 21:21:17\n\n",
+                "status": "open",
+                "priority": "medium",
+                "category": "general",
+                "tags": [
+                    "email",
+                    "auto-created"
+                ],
+                "reporter_id": "system",
+                "customer_id": "CUST-1760983277451353353",
+                "source": "email",
+                "participants": [
+                    {
+                        "user_id": "system",
+                        "role": "reporter",
+                        "joined_at": "2025-10-20T21:21:17.407487993+03:00"
+                    }
+                ],
+                "history": [
+                    {
+                        "id": "EVT-1760984477407488744",
+                        "type": "created",
+                        "user_id": "system",
+                        "timestamp": "2025-10-20T21:21:17.407488884+03:00",
+                        "message": "Задача создана"
+                    }
+                ],
+                "created_at": "2025-10-20T21:21:17.407487993+03:00",
+                "updated_at": "2025-10-20T21:21:17.407487993+03:00"
+            }
+        ],
+        "pagination": {
+            "page": 1,
+            "page_size": 20,
+            "total_count": 4,
+            "total_pages": 1
+        }
+    },
+    "meta": {
+        "timestamp": "2025-10-20T21:21:56.498163195+03:00",
+        "page": {
+            "page": 1,
+            "page_size": 20,
+            "total_count": 4,
+            "total_pages": 1
+        }
+    }
+}
