@@ -29,6 +29,9 @@ type TaskService interface {
 	AddMessage(ctx context.Context, id string, req AddMessageRequest) (*domain.Task, error)
 	AddInternalNote(ctx context.Context, id string, authorID, content string) (*domain.Task, error)
 
+	// Email threading support
+	FindBySourceMeta(ctx context.Context, meta map[string]interface{}) ([]domain.Task, error)
+
 	// Search and lists
 	SearchTasks(ctx context.Context, query TaskQuery) (*TaskSearchResult, error)
 	GetCustomerTasks(ctx context.Context, customerID string) ([]domain.Task, error)

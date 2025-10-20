@@ -201,6 +201,24 @@ func (r *TaskRepository) FindSubtasks(ctx context.Context, parentID string) ([]d
 	return tasks, nil
 }
 
+func (r *TaskRepository) FindBySourceMeta(ctx context.Context, meta map[string]interface{}) ([]domain.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var tasks []domain.Task
+
+	for _, task := range r.tasks {
+		if r.matchesSourceMeta(task, meta) {
+			tasks = append(tasks, *task)
+		}
+	}
+
+	r.logger.Debug(ctx, "tasks found by source meta",
+		"criteria", meta,
+		"count", len(tasks))
+	return tasks, nil
+}
+
 func (r *TaskRepository) GetStats(ctx context.Context, query ports.StatsQuery) (*ports.TaskStats, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -357,6 +375,51 @@ func (r *TaskRepository) matchesQuery(task *domain.Task, query ports.TaskQuery) 
 	// TODO: Реализовать фильтр по датам и поиск по тексту
 
 	return true
+}
+
+// matchesSourceMeta проверяет соответствие задачи критериям поиска по мета-данным
+func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]interface{}) bool {
+	if task.SourceMeta == nil {
+		return false
+	}
+
+	// Поиск по message_id
+	if messageID, exists := meta["message_id"]; exists {
+		if taskMsgID, exists := task.SourceMeta["message_id"]; exists {
+			if taskMsgID == messageID {
+				return true
+			}
+		}
+	}
+
+	// Поиск по in_reply_to
+	if inReplyTo, exists := meta["in_reply_to"]; exists {
+		if taskInReplyTo, exists := task.SourceMeta["in_reply_to"]; exists {
+			if taskInReplyTo == inReplyTo {
+				return true
+			}
+		}
+	}
+
+	// Поиск по references (цепочка писем)
+	if references, exists := meta["references"]; exists {
+		if refs, ok := references.([]string); ok {
+			if taskRefs, exists := task.SourceMeta["references"]; exists {
+				if taskRefsSlice, ok := taskRefs.([]string); ok {
+					// Проверяем пересечение references
+					for _, ref := range refs {
+						for _, taskRef := range taskRefsSlice {
+							if ref == taskRef {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 func (r *TaskRepository) matchesStatsQuery(task *domain.Task, query ports.StatsQuery) bool {

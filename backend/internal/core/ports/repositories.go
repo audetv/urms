@@ -23,6 +23,8 @@ type TaskRepository interface {
 	FindByType(ctx context.Context, taskType domain.TaskType) ([]domain.Task, error)
 	FindOpenTasks(ctx context.Context) ([]domain.Task, error)
 	FindSubtasks(ctx context.Context, parentID string) ([]domain.Task, error)
+	// Email threading support
+	FindBySourceMeta(ctx context.Context, meta map[string]interface{}) ([]domain.Task, error)
 
 	// Statistics
 	GetStats(ctx context.Context, query StatsQuery) (*TaskStats, error)

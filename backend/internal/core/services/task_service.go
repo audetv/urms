@@ -332,6 +332,23 @@ func (s *TaskService) AddInternalNote(ctx context.Context, id string, authorID, 
 	return s.AddMessage(ctx, id, req)
 }
 
+// Добавляем метод FindBySourceMeta в TaskService
+func (s *TaskService) FindBySourceMeta(ctx context.Context, meta map[string]interface{}) ([]domain.Task, error) {
+	if len(meta) == 0 {
+		return nil, fmt.Errorf("search meta cannot be empty")
+	}
+
+	tasks, err := s.taskRepo.FindBySourceMeta(ctx, meta)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find tasks by source meta: %w", err)
+	}
+
+	s.logger.Debug(ctx, "tasks found by source meta",
+		"criteria", meta,
+		"count", len(tasks))
+	return tasks, nil
+}
+
 // SearchTasks ищет задачи по критериям
 func (s *TaskService) SearchTasks(ctx context.Context, query ports.TaskQuery) (*ports.TaskSearchResult, error) {
 	tasks, err := s.taskRepo.FindByQuery(ctx, query)

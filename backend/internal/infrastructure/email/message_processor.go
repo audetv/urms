@@ -184,21 +184,51 @@ func (p *MessageProcessor) findOrCreateCustomer(ctx context.Context, email domai
 }
 
 // findExistingTaskByThread ищет существующую задачу по Thread-ID
+// Заменяем временную реализацию findExistingTaskByThread на полнофункциональную
 func (p *MessageProcessor) findExistingTaskByThread(ctx context.Context, email domain.EmailMessage) (*domain.Task, error) {
-	// ВРЕМЕННАЯ РЕАЛИЗАЦИЯ: Поиск по Thread-ID будет реализован в Phase 3
-	// когда добавим полноценную поддержку email threading
+	// Создаем критерии поиска по Thread-ID
+	searchMeta := make(map[string]interface{})
 
-	p.logger.Debug(ctx, "Thread-based task search not yet implemented - creating new task",
+	if email.MessageID != "" {
+		searchMeta["message_id"] = email.MessageID
+	}
+	if email.InReplyTo != "" {
+		searchMeta["in_reply_to"] = email.InReplyTo
+	}
+	if len(email.References) > 0 {
+		searchMeta["references"] = email.References
+	}
+
+	// Если нет критериев для поиска - создаем новую задачу
+	if len(searchMeta) == 0 {
+		p.logger.Debug(ctx, "no thread criteria found for email",
+			"message_id", email.MessageID)
+		return nil, nil
+	}
+
+	// Ищем существующие задачи по Thread-ID
+	tasks, err := p.taskService.FindBySourceMeta(ctx, searchMeta)
+	if err != nil {
+		p.logger.Warn(ctx, "failed to search tasks by source meta",
+			"message_id", email.MessageID,
+			"error", err.Error())
+		return nil, err
+	}
+
+	// Возвращаем самую релевантную задачу (первую найденную)
+	if len(tasks) > 0 {
+		p.logger.Info(ctx, "found existing task for email thread",
+			"message_id", email.MessageID,
+			"task_id", tasks[0].ID,
+			"matches_count", len(tasks),
+			"search_criteria", searchMeta)
+		return &tasks[0], nil
+	}
+
+	p.logger.Debug(ctx, "no existing task found for email thread",
 		"message_id", email.MessageID,
 		"in_reply_to", email.InReplyTo,
 		"references_count", len(email.References))
-
-	// TODO: Реализовать когда добавим поиск по SourceMeta в TaskRepository
-	// План реализации:
-	// 1. Добавить поле SourceMeta в TaskQuery
-	// 2. Реализовать поиск по message_id, in_reply_to в репозиториях
-	// 3. Добавить индексацию для производительности
-
 	return nil, nil
 }
 
@@ -214,13 +244,19 @@ func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email dom
 		Subject:     p.normalizeSubject(email.Subject),
 		Description: p.buildTaskDescription(email),
 		CustomerID:  customerID,
-		ReporterID:  "system", // TODO: Заменить на реального пользователя
+		ReporterID:  "system",
 		Source:      domain.SourceEmail,
-		SourceMeta:  p.buildSourceMeta(email),
+		SourceMeta:  p.buildSourceMeta(email), // ✅ Должен заполнять message_id, in_reply_to, references
 		Priority:    priority,
 		Category:    category,
 		Tags:        p.extractTags(ctx, email),
 	}
+
+	p.logger.Debug(ctx, "creating new task with source meta",
+		"message_id", email.MessageID,
+		"in_reply_to", email.InReplyTo,
+		"references_count", len(email.References),
+		"source_meta", req.SourceMeta)
 
 	task, err := p.taskService.CreateSupportTask(ctx, req)
 	if err != nil {
