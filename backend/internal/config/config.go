@@ -121,7 +121,7 @@ func LoadConfig() (*Config, error) {
 		},
 		Logging: LoggingConfig{
 			Level:  getEnv("URMS_LOGGING_LEVEL", "info"),
-			Format: getEnv("URMS_LOGGING_FORMAT", "text"),
+			Format: getEnv("URMS_LOGGING_FORMAT", "json"),
 		},
 	}
 

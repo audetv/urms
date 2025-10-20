@@ -24,6 +24,7 @@ import (
 	"github.com/audetv/urms/internal/infrastructure/logging"
 	persistence "github.com/audetv/urms/internal/infrastructure/persistence/email"
 	"github.com/audetv/urms/internal/infrastructure/persistence/email/postgres"
+	"github.com/audetv/urms/internal/infrastructure/persistence/task/inmemory"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 )
@@ -214,10 +215,19 @@ func setupEmailService(gateway ports.EmailGateway, repo ports.EmailRepository, l
 	// Используем существующую реализацию из infrastructure
 	idGenerator := id.NewUUIDGenerator()
 
+	// Инициализация репозиториев (InMemory для разработки)
+	taskRepo := inmemory.NewTaskRepository(logger)
+	customerRepo := inmemory.NewCustomerRepository(logger)
+	userRepo := inmemory.NewUserRepository(logger)
+
+	// Инициализация сервисов
+	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
+	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
+
 	// ✅ АКТИВИРУЕМ MessageProcessor
-	messageProcessor := email.NewDefaultMessageProcessor(logger)
+	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
 	logger.Info(context.Background(), "✅ MessageProcessor activated",
-		"type", "DefaultMessageProcessor")
+		"type", "MessageProcessor")
 
 	// ✅ NEW: Используем переданный structured logger
 	return services.NewEmailService(
