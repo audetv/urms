@@ -20,11 +20,13 @@ import (
 	"github.com/audetv/urms/internal/infrastructure/email"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
 	"github.com/audetv/urms/internal/infrastructure/health"
-	httphandler "github.com/audetv/urms/internal/infrastructure/http"
+	"github.com/audetv/urms/internal/infrastructure/http/handlers"
+	"github.com/audetv/urms/internal/infrastructure/http/middleware"
 	"github.com/audetv/urms/internal/infrastructure/logging"
 	persistence "github.com/audetv/urms/internal/infrastructure/persistence/email"
 	"github.com/audetv/urms/internal/infrastructure/persistence/email/postgres"
 	"github.com/audetv/urms/internal/infrastructure/persistence/task/inmemory"
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 )
@@ -92,13 +94,16 @@ type Dependencies struct {
 	EmailService     *services.EmailService
 	HealthAggregator ports.HealthAggregator
 	EmailGateway     ports.EmailGateway
-	Logger           ports.Logger // ✅ ДОБАВЛЯЕМ logger в зависимости
+	Logger           ports.Logger
+	// ✅ ДОБАВЛЯЕМ Task Management сервисы
+	TaskService     ports.TaskService
+	CustomerService ports.CustomerService
 }
 
 // setupDependencies инициализирует все зависимости приложения
 func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, error) {
 	deps := &Dependencies{
-		Logger: logger, // ✅ СОХРАНЯЕМ logger в зависимости
+		Logger: logger,
 	}
 
 	logger.Info(context.Background(), "🛠️ Initializing dependencies")
@@ -115,7 +120,7 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 	}
 
 	// Инициализируем IMAP адаптер с новой конфигурацией таймаутов
-	deps.EmailGateway = setupIMAPAdapter(cfg, logger) // ✅ ПЕРЕДАЕМ logger
+	deps.EmailGateway = setupIMAPAdapter(cfg, logger)
 
 	// Инициализируем email репозиторий
 	emailRepo, err := persistence.NewEmailRepository(
@@ -129,6 +134,16 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 
 	// ✅ NEW: Передаем logger в email service
 	deps.EmailService = setupEmailService(deps.EmailGateway, emailRepo, logger)
+
+	// ✅ ДОБАВЛЯЕМ: Инициализация Task Management сервисов
+	taskRepo := inmemory.NewTaskRepository(logger)
+	customerRepo := inmemory.NewCustomerRepository(logger)
+	userRepo := inmemory.NewUserRepository(logger)
+
+	deps.TaskService = services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
+	deps.CustomerService = services.NewCustomerService(customerRepo, taskRepo, logger)
+
+	logger.Info(context.Background(), "✅ Task Management services initialized")
 
 	// Инициализируем health checks
 	deps.HealthAggregator = setupHealthChecks(deps.EmailGateway, deps.DB)
@@ -262,41 +277,65 @@ func setupHealthChecks(imapAdapter ports.EmailGateway, db *sqlx.DB) ports.Health
 	return aggregator
 }
 
-// setupHTTPServer настраивает HTTP сервер
-func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
-	// Создаем HTTP handlers
-	healthHandler := httphandler.NewHealthHandler(deps.HealthAggregator)
+// setupGinRouter настраивает роутинг с Gin
+func setupGinRouter(deps *Dependencies, logger ports.Logger) *gin.Engine {
+	router := gin.Default()
 
-	// Настраиваем роутинг
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", healthHandler.HealthCheckHandler)
-	mux.HandleFunc("/ready", healthHandler.ReadyCheckHandler)
-	mux.HandleFunc("/live", healthHandler.LiveCheckHandler)
+	// Настраиваем middleware
+	middleware.SetupMiddleware(router, logger)
 
-	// Основной endpoint
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"service": "URMS-OS", "version": "1.0.0", "status": "running"}`)
-	})
+	// Инициализируем handlers
+	taskHandler := handlers.NewTaskHandler(deps.TaskService, logger)
+	customerHandler := handlers.NewCustomerHandler(deps.CustomerService, deps.TaskService, logger)
+	healthHandler := handlers.NewHealthHandler(deps.HealthAggregator)
 
-	// ✅ ИСПРАВЛЕНО: Добавляем таймаут для test-imap endpoint
-	mux.HandleFunc("/test-imap", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
-			return
+	// API Routes v1
+	api := router.Group("/api/v1")
+	{
+		// Tasks
+		tasks := api.Group("/tasks")
+		{
+			tasks.GET("", taskHandler.ListTasks)
+			tasks.POST("", taskHandler.CreateTask)
+			tasks.POST("/support", taskHandler.CreateSupportTask)
+			tasks.GET("/:id", taskHandler.GetTask)
+			tasks.PUT("/:id", taskHandler.UpdateTask)
+			tasks.DELETE("/:id", taskHandler.DeleteTask)
+			tasks.PUT("/:id/status", taskHandler.ChangeStatus)
+			tasks.PUT("/:id/assign", taskHandler.AssignTask)
+			tasks.GET("/:id/messages", taskHandler.GetTaskMessages)
+			tasks.POST("/:id/messages", taskHandler.AddMessage)
 		}
 
-		// ✅ ДОБАВЛЕНО: Строгий таймаут для тестового endpoint
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		// Customers
+		customers := api.Group("/customers")
+		{
+			customers.GET("", customerHandler.ListCustomers)
+			customers.POST("", customerHandler.CreateCustomer)
+			customers.GET("/find-or-create", customerHandler.FindOrCreateCustomer)
+			customers.GET("/:id", customerHandler.GetCustomer)
+			customers.PUT("/:id", customerHandler.UpdateCustomer)
+			customers.DELETE("/:id", customerHandler.DeleteCustomer)
+			customers.GET("/:id/profile", customerHandler.GetCustomerProfile)
+			customers.GET("/:id/tasks", customerHandler.GetCustomerTasks)
+		}
+	}
+
+	// System routes (legacy compatibility)
+	router.GET("/health", healthHandler.HealthCheck)
+	router.GET("/ready", healthHandler.ReadyCheck)
+	router.GET("/live", healthHandler.LiveCheck)
+
+	// Legacy test endpoint - сохраняем для обратной совместимости
+	router.POST("/test-imap", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 		defer cancel()
 
-		// Тестируем получение сообщений с новой системой таймаутов
 		criteria := ports.FetchCriteria{
 			Mailbox:    "INBOX",
-			Limit:      10, // Только 10 сообщений для теста
+			Limit:      10,
 			UnseenOnly: false,
-			Since:      time.Now().Add(-1 * time.Hour), // Только за последний час
+			Since:      time.Now().Add(-1 * time.Hour),
 		}
 
 		startTime := time.Now()
@@ -304,26 +343,116 @@ func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
 		duration := time.Since(startTime)
 
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
 			if errors.Is(err, context.DeadlineExceeded) {
-				w.WriteHeader(http.StatusRequestTimeout)
-				fmt.Fprintf(w, `{"error": "IMAP test timeout", "duration": "%v"}`, duration)
+				c.JSON(http.StatusRequestTimeout, gin.H{
+					"error":    "IMAP test timeout",
+					"duration": duration.String(),
+				})
 			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, `{"error": "IMAP test failed", "details": "%s", "duration": "%v"}`, err.Error(), duration)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error":    "IMAP test failed",
+					"details":  err.Error(),
+					"duration": duration.String(),
+				})
 			}
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status": "success", "messages_fetched": %d, "duration": "%v", "timeout_config": "active"}`,
-			len(messages), duration)
+		c.JSON(http.StatusOK, gin.H{
+			"status":           "success",
+			"messages_fetched": len(messages),
+			"duration":         duration.String(),
+			"timeout_config":   "active",
+		})
 	})
+
+	// Root endpoint
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"service":     "URMS-OS",
+			"version":     "1.0.0",
+			"status":      "running",
+			"api_version": "v1",
+		})
+	})
+
+	logger.Info(context.Background(), "✅ Gin router configured with Task Management API")
+	return router
+}
+
+// setupHTTPServer настраивает HTTP сервер
+func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
+	// Создаем Gin router вместо старого mux
+	// Создаем Gin router
+	router := setupGinRouter(deps, deps.Logger)
+
+	// router := setupGinRouter(
+	// 	deps.TaskService,     // Нужно добавить в Dependencies
+	// 	deps.CustomerService, // Нужно добавить в Dependencies
+	// 	deps.HealthAggregator,
+	// 	deps.Logger,
+	// )
+
+	// // Создаем HTTP handlers
+	// healthHandler := httphandler.NewHealthHandler(deps.HealthAggregator)
+
+	// // Настраиваем роутинг
+	// mux := http.NewServeMux()
+	// mux.HandleFunc("/health", healthHandler.HealthCheckHandler)
+	// mux.HandleFunc("/ready", healthHandler.ReadyCheckHandler)
+	// mux.HandleFunc("/live", healthHandler.LiveCheckHandler)
+
+	// // Основной endpoint
+	// mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// 	w.Header().Set("Content-Type", "application/json")
+	// 	w.WriteHeader(http.StatusOK)
+	// 	fmt.Fprintf(w, `{"service": "URMS-OS", "version": "1.0.0", "status": "running"}`)
+	// })
+
+	// // ✅ ИСПРАВЛЕНО: Добавляем таймаут для test-imap endpoint
+	// mux.HandleFunc("/test-imap", func(w http.ResponseWriter, r *http.Request) {
+	// 	if r.Method != http.MethodPost {
+	// 		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+	// 		return
+	// 	}
+
+	// 	// ✅ ДОБАВЛЕНО: Строгий таймаут для тестового endpoint
+	// 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// 	defer cancel()
+
+	// 	// Тестируем получение сообщений с новой системой таймаутов
+	// 	criteria := ports.FetchCriteria{
+	// 		Mailbox:    "INBOX",
+	// 		Limit:      10, // Только 10 сообщений для теста
+	// 		UnseenOnly: false,
+	// 		Since:      time.Now().Add(-1 * time.Hour), // Только за последний час
+	// 	}
+
+	// 	startTime := time.Now()
+	// 	messages, err := deps.EmailGateway.FetchMessages(ctx, criteria)
+	// 	duration := time.Since(startTime)
+
+	// 	if err != nil {
+	// 		w.Header().Set("Content-Type", "application/json")
+	// 		if errors.Is(err, context.DeadlineExceeded) {
+	// 			w.WriteHeader(http.StatusRequestTimeout)
+	// 			fmt.Fprintf(w, `{"error": "IMAP test timeout", "duration": "%v"}`, duration)
+	// 		} else {
+	// 			w.WriteHeader(http.StatusInternalServerError)
+	// 			fmt.Fprintf(w, `{"error": "IMAP test failed", "details": "%s", "duration": "%v"}`, err.Error(), duration)
+	// 		}
+	// 		return
+	// 	}
+
+	// 	w.Header().Set("Content-Type", "application/json")
+	// 	w.WriteHeader(http.StatusOK)
+	// 	fmt.Fprintf(w, `{"status": "success", "messages_fetched": %d, "duration": "%v", "timeout_config": "active"}`,
+	// 		len(messages), duration)
+	// })
 
 	return &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      mux,
+		Handler:      router,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
