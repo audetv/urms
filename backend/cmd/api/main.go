@@ -31,6 +31,7 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// backend/cmd/api/main.go
 func main() {
 	// Загружаем конфигурацию
 	cfg, err := config.LoadConfig()
@@ -38,27 +39,41 @@ func main() {
 		log.Fatalf("❌ Failed to load configuration: %v", err)
 	}
 
-	// ✅ NEW: Создаем logger сразу для main
+	// ✅ Создаем logger сразу для main
 	logger := logging.NewZerologLogger(cfg.Logging.Level, cfg.Logging.Format)
 	ctx := context.Background()
 
 	logger.Info(ctx, "🚀 Starting URMS-OS API Server")
-	logger.Info(ctx, "📋 Configuration",
-		"database", cfg.Database.Provider,
-		"server_port", cfg.Server.Port,
-		"logging_level", cfg.Logging.Level,
-		"imap_connect_timeout", cfg.Email.IMAP.ConnectTimeout,
-		"imap_fetch_timeout", cfg.Email.IMAP.FetchTimeout,
-		"imap_operation_timeout", cfg.Email.IMAP.OperationTimeout,
-		"imap_page_size", cfg.Email.IMAP.PageSize,
-		"imap_max_messages", cfg.Email.IMAP.MaxMessagesPerPoll)
 
 	// Инициализируем зависимости
-	dependencies, err := setupDependencies(cfg, logger) // ✅ ПЕРЕДАЕМ logger
+	dependencies, err := setupDependencies(cfg, logger)
 	if err != nil {
 		logger.Error(ctx, "❌ Failed to setup dependencies", "error", err)
 		os.Exit(1)
 	}
+
+	// ✅ СОЗДАЕМ И ЗАПУСКАЕМ МЕНЕДЖЕР ФОНОВЫХ ЗАДАЧ ДО HTTP СЕРВЕРА
+	backgroundManager := services.NewBackgroundTaskManager(logger)
+
+	// ✅ РЕГИСТРИРУЕМ ФОНОВЫЕ ЗАДАЧИ
+	if cfg.Email.IMAP.PollInterval > 0 {
+		emailPollerTask := email.NewEmailPollerTask(
+			dependencies.EmailService,
+			cfg.Email.IMAP.PollInterval,
+			cfg.Email.IMAP.OperationTimeout,
+			logger,
+		)
+		backgroundManager.RegisterTask(emailPollerTask)
+	}
+
+	// ✅ ЗАПУСКАЕМ ВСЕ ФОНОВЫЕ ЗАДАЧИ
+	if err := backgroundManager.StartAll(ctx); err != nil {
+		logger.Error(ctx, "❌ Failed to start background tasks", "error", err)
+		os.Exit(1)
+	}
+
+	// ✅ ПРИНУДИТЕЛЬНЫЙ СБРОС БУФЕРА ПОСЛЕ ЗАПУСКА ФОНОВЫХ ЗАДАЧ
+	os.Stdout.Sync()
 
 	// Запускаем миграции если используется PostgreSQL
 	if cfg.Database.Provider == "postgres" {
@@ -72,9 +87,6 @@ func main() {
 	// Создаем HTTP сервер
 	server := setupHTTPServer(cfg, dependencies)
 
-	// Запускаем фоновые процессы
-	startBackgroundProcesses(ctx, cfg, dependencies)
-
 	// Запускаем сервер
 	go func() {
 		logger.Info(ctx, "🌐 Starting HTTP server", "port", cfg.Server.Port)
@@ -84,8 +96,8 @@ func main() {
 		}
 	}()
 
-	// Ожидаем сигнал завершения
-	waitForShutdown(server, dependencies)
+	// ✅ ПЕРЕДАЕМ МЕНЕДЖЕР В waitForShutdown для корректного завершения
+	waitForShutdown(server, dependencies, backgroundManager)
 }
 
 // Dependencies содержит все зависимости приложения
@@ -261,13 +273,12 @@ func setupEmailServiceWithTaskServices(
 func setupHealthChecks(imapAdapter ports.EmailGateway, db *sqlx.DB) ports.HealthAggregator {
 	aggregator := health.NewHealthAggregator()
 
-	// Регистрируем health check для IMAP
-	// Приводим к конкретному типу для доступа к методам адаптера
-	if imapAdapter, ok := imapAdapter.(*email.IMAPAdapter); ok {
-		imapHealthChecker := email.NewIMAPHealthChecker(imapAdapter)
-		aggregator.Register(imapHealthChecker)
+	// Регистрируем health check для Email Gateway через адаптер
+	if imapAdapter != nil {
+		emailHealthChecker := email.NewEmailGatewayHealthAdapter(imapAdapter)
+		aggregator.Register(emailHealthChecker)
 	} else {
-		log.Printf("⚠️  IMAP adapter is not of expected type, health check may not work properly")
+		log.Printf("⚠️  Email gateway is nil, skipping health check")
 	}
 
 	// Регистрируем health check для PostgreSQL если используется
@@ -384,132 +395,14 @@ func setupGinRouter(deps *Dependencies, logger ports.Logger) *gin.Engine {
 
 // setupHTTPServer настраивает HTTP сервер
 func setupHTTPServer(cfg *config.Config, deps *Dependencies) *http.Server {
-	// Создаем Gin router вместо старого mux
 	// Создаем Gin router
 	router := setupGinRouter(deps, deps.Logger)
-
-	// router := setupGinRouter(
-	// 	deps.TaskService,     // Нужно добавить в Dependencies
-	// 	deps.CustomerService, // Нужно добавить в Dependencies
-	// 	deps.HealthAggregator,
-	// 	deps.Logger,
-	// )
-
-	// // Создаем HTTP handlers
-	// healthHandler := httphandler.NewHealthHandler(deps.HealthAggregator)
-
-	// // Настраиваем роутинг
-	// mux := http.NewServeMux()
-	// mux.HandleFunc("/health", healthHandler.HealthCheckHandler)
-	// mux.HandleFunc("/ready", healthHandler.ReadyCheckHandler)
-	// mux.HandleFunc("/live", healthHandler.LiveCheckHandler)
-
-	// // Основной endpoint
-	// mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-	// 	w.Header().Set("Content-Type", "application/json")
-	// 	w.WriteHeader(http.StatusOK)
-	// 	fmt.Fprintf(w, `{"service": "URMS-OS", "version": "1.0.0", "status": "running"}`)
-	// })
-
-	// // ✅ ИСПРАВЛЕНО: Добавляем таймаут для test-imap endpoint
-	// mux.HandleFunc("/test-imap", func(w http.ResponseWriter, r *http.Request) {
-	// 	if r.Method != http.MethodPost {
-	// 		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
-	// 		return
-	// 	}
-
-	// 	// ✅ ДОБАВЛЕНО: Строгий таймаут для тестового endpoint
-	// 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	// 	defer cancel()
-
-	// 	// Тестируем получение сообщений с новой системой таймаутов
-	// 	criteria := ports.FetchCriteria{
-	// 		Mailbox:    "INBOX",
-	// 		Limit:      10, // Только 10 сообщений для теста
-	// 		UnseenOnly: false,
-	// 		Since:      time.Now().Add(-1 * time.Hour), // Только за последний час
-	// 	}
-
-	// 	startTime := time.Now()
-	// 	messages, err := deps.EmailGateway.FetchMessages(ctx, criteria)
-	// 	duration := time.Since(startTime)
-
-	// 	if err != nil {
-	// 		w.Header().Set("Content-Type", "application/json")
-	// 		if errors.Is(err, context.DeadlineExceeded) {
-	// 			w.WriteHeader(http.StatusRequestTimeout)
-	// 			fmt.Fprintf(w, `{"error": "IMAP test timeout", "duration": "%v"}`, duration)
-	// 		} else {
-	// 			w.WriteHeader(http.StatusInternalServerError)
-	// 			fmt.Fprintf(w, `{"error": "IMAP test failed", "details": "%s", "duration": "%v"}`, err.Error(), duration)
-	// 		}
-	// 		return
-	// 	}
-
-	// 	w.Header().Set("Content-Type", "application/json")
-	// 	w.WriteHeader(http.StatusOK)
-	// 	fmt.Fprintf(w, `{"status": "success", "messages_fetched": %d, "duration": "%v", "timeout_config": "active"}`,
-	// 		len(messages), duration)
-	// })
 
 	return &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      router,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
-	}
-}
-
-// startBackgroundProcesses запускает фоновые процессы с поддержкой context
-func startBackgroundProcesses(ctx context.Context, cfg *config.Config, deps *Dependencies) {
-	// ✅ ГЕНЕРИРУЕМ correlation ID для фоновых процессов
-	bgCtx := context.WithValue(ctx, ports.CorrelationIDKey, "background-"+generateShortID())
-
-	deps.Logger.Info(ctx, "🔄 Starting background processes...")
-
-	// Запускаем IMAP poller если настроен
-	if cfg.Email.IMAP.PollInterval > 0 {
-		go startIMAPPoller(bgCtx, cfg, deps)
-	}
-
-	deps.Logger.Info(ctx, "✅ Background processes initialized")
-}
-
-// startIMAPPoller запускает IMAP poller с поддержкой context и таймаутов
-func startIMAPPoller(ctx context.Context, cfg *config.Config, deps *Dependencies) {
-	// Создаем context для логирования в poller
-	pollerCtx := context.WithValue(ctx, ports.CorrelationIDKey, "imap-poller")
-
-	deps.Logger.Info(pollerCtx, "📧 Starting IMAP poller",
-		"interval", cfg.Email.IMAP.PollInterval,
-		"fetch_timeout", cfg.Email.IMAP.FetchTimeout,
-		"operation_timeout", cfg.Email.IMAP.OperationTimeout,
-		"page_size", cfg.Email.IMAP.PageSize)
-
-	ticker := time.NewTicker(cfg.Email.IMAP.PollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			deps.Logger.Info(pollerCtx, "🛑 IMAP poller stopped")
-			return
-		case <-ticker.C:
-			deps.Logger.Info(pollerCtx, "🔄 IMAP poller running scheduled check with timeout protection...")
-
-			// Создаем контекст с таймаутом операции
-			pollCtx, cancel := context.WithTimeout(ctx, cfg.Email.IMAP.OperationTimeout)
-
-			startTime := time.Now()
-			if err := deps.EmailService.ProcessIncomingEmails(pollCtx); err != nil {
-				deps.Logger.Error(pollCtx, "❌ IMAP poller error", "error", err)
-			} else {
-				duration := time.Since(startTime)
-				deps.Logger.Info(pollCtx, "✅ IMAP poller completed successfully", "duration", duration)
-			}
-
-			cancel() // Освобождаем ресурсы context
-		}
 	}
 }
 
@@ -525,33 +418,34 @@ func runMigrations(dsn string) error {
 }
 
 // waitForShutdown ожидает сигнал завершения и graceful shutdown
-func waitForShutdown(server *http.Server, deps *Dependencies) {
+func waitForShutdown(server *http.Server, deps *Dependencies, bgManager *services.BackgroundTaskManager) {
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
-	// log.Printf("🛑 Shutting down server...")
-	deps.Logger.Info(context.Background(), "🛑 Shutting down server...")
-
-	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	deps.Logger.Info(ctx, "🛑 Shutting down server...")
+
+	// ✅ 1. ОСТАНАВЛИВАЕМ ФОНОВЫЕ ЗАДАЧИ
+	if err := bgManager.StopAll(ctx); err != nil {
+		deps.Logger.Error(ctx, "❌ Error stopping background tasks", "error", err)
+	}
+
+	// ✅ 2. ОСТАНАВЛИВАЕМ HTTP СЕРВЕР
 	if err := server.Shutdown(ctx); err != nil {
-		// log.Printf("❌ Server shutdown failed: %v", err)
-		deps.Logger.Error(ctx, "❌ Server shutdown failed", "error", err)
+		deps.Logger.Error(ctx, "❌ Server shutdown error", "error", err)
 	}
 
-	// Закрываем соединения с БД
+	// ✅ 3. ЗАКРЫВАЕМ СОЕДИНЕНИЯ С БД (ВАЖНО!)
 	if deps.DB != nil {
-		deps.DB.Close()
+		if err := deps.DB.Close(); err != nil {
+			deps.Logger.Error(ctx, "❌ Database connection close error", "error", err)
+		} else {
+			deps.Logger.Info(ctx, "✅ Database connections closed")
+		}
 	}
 
-	//log.Printf("✅ Server stopped gracefully")
 	deps.Logger.Info(ctx, "✅ Server stopped gracefully")
-}
-
-// Вспомогательная функция для генерации короткого ID
-func generateShortID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano()%10000)
 }
