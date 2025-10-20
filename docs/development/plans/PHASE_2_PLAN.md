@@ -13,6 +13,7 @@
 |-------|----------|---------|---------------|
 | MarkAsRead test expectation | MEDIUM | Investigating | Email integration tests |
 | PostgreSQL Migration | LOW | Pending | Production deployment |
+| InMemory Repository Message Persistence | LOW | Investigating | Full message testing |
 
 ## 📋 ЗАДАЧИ ЭТАПА
 

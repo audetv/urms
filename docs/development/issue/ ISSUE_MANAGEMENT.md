@@ -23,6 +23,16 @@
   - Реализовать PostgreSQL репозитории
   - Написать тесты для БД
 
+### Issue #3: InMemory Repository Message Persistence
+- **Priority**: LOW
+- **Status**: Investigating  
+- **Description**: InMemory репозитории не сохраняют сообщения при обновлении задач. В тестах временно отключена проверка сообщений.
+- **Impact**: Ограничивает тестирование полного функционала сообщений в задачах
+- **Next Steps**:
+  - Исследовать причину в TaskRepository.Update методе
+  - Исправить сохранение сообщений в InMemory реализации
+  - Восстановить проверки сообщений в тестах
+
 ## ✅ Решенные проблемы
 
 ### Issue #0: Time-based Test Assertions
