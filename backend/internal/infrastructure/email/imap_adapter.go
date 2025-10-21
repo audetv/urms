@@ -384,8 +384,8 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 		imapCriteria.WithoutFlags = []string{imap.SeenFlag}
 	}
 
-	// Ограничение по дате - только последний час для тестирования
-	imapCriteria.Since = time.Now().Add(-1 * time.Hour)
+	// Ограничение по дате - только за последние 7 дней
+	imapCriteria.Since = time.Now().Add(-3 * 24 * time.Hour)
 
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
@@ -402,12 +402,12 @@ func (a *IMAPAdapter) fetchInitialMessages(ctx context.Context, criteria ports.F
 		return []domain.EmailMessage{}, nil
 	}
 
-	// ✅ УВЕЛИЧИВАЕМ ОГРАНИЧЕНИЕ: Берем только первые 10 сообщений для тестирования
-	if len(messageUIDs) > 10 {
-		messageUIDs = messageUIDs[:10]
+	// ✅ УВЕЛИЧИВАЕМ ОГРАНИЧЕНИЕ: Берем только первые 50 сообщений для тестирования
+	if len(messageUIDs) > 100 {
+		messageUIDs = messageUIDs[:100]
 		a.logger.Info(ctx, "Limited initial message fetch for testing",
 			"operation", "fetch_initial",
-			"limited_to", 10)
+			"limited_to", 100)
 	}
 
 	// Получаем сообщения
