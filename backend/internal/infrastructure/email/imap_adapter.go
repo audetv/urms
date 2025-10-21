@@ -2,6 +2,7 @@ package email
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -738,53 +739,271 @@ func (a *IMAPAdapter) convertToDomainMessage(imapMsg *imap.Message) (domain.Emai
 	return domainMsg, nil
 }
 
-// convertToDomainMessageWithBody конвертирует IMAP сообщение с полным парсингом
+// convertToDomainMessageWithBody - ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (domain.EmailMessage, error) {
 	if imapMsg.Envelope == nil {
 		return domain.EmailMessage{}, fmt.Errorf("IMAP message has no envelope")
 	}
 
-	// Извлекаем базовую информацию
+	// ✅ КРИТИЧЕСКОЕ: Сохраняем данные ПЕРВЫМ действием
+	rawData, err := a.preserveMessageData(imapMsg)
+	if err != nil {
+		return domain.EmailMessage{}, fmt.Errorf("failed to preserve message data: %w", err)
+	}
+
+	// ✅ ИСПОЛЬЗУЕМ сохраненные данные для ВСЕХ операций
+	headers := a.extractHeadersFromPreservedData(rawData)
+	bodyInfo := a.parseBodyFromPreservedData(rawData)
+
+	// ✅ ИСПРАВЛЕНО: используем правильный тип EnvelopeInfo
 	envelopeInfo := imapclient.GetMessageEnvelopeInfo(imapMsg)
-	if envelopeInfo == nil {
-		return domain.EmailMessage{}, fmt.Errorf("failed to extract envelope info")
+
+	// ✅ ВОССТАНАВЛИВАЕМ THREADING ДАННЫЕ
+	allReferences := a.extractThreadingData(headers, envelopeInfo)
+	finalInReplyTo := a.determineInReplyTo(headers, envelopeInfo)
+
+	// ✅ СОЗДАЕМ ДОМЕННОЕ СООБЩЕНИЕ
+	domainMsg, err := a.buildDomainMessage(
+		envelopeInfo,
+		headers,
+		bodyInfo,
+		allReferences,
+		finalInReplyTo,
+	)
+	if err != nil {
+		return domain.EmailMessage{}, err
 	}
 
-	// ✅ ВОССТАНАВЛИВАЕМ РАБОТАЮЩИЙ ПАРСИНГ REFERENCES ИЗ ЗАГОЛОВКОВ
-	headers := a.extractAllHeaders(imapMsg)
+	// ✅ ДЕТАЛЬНАЯ ВАЛИДАЦИЯ РЕЗУЛЬТАТА
+	a.validateMessageConversion(domainMsg, rawData)
 
-	// ✅ ИЗВЛЕКАЕМ REFERENCES ИЗ ЗАГОЛОВКОВ (как это работало ранее)
-	var allReferences []string
-	if refs, exists := headers["References"]; exists && len(refs) > 0 {
-		// ✅ РАЗБИВАЕМ MULTILINE REFERENCES ПО ПРОБЕЛАМ (уже объединенные в extractAllHeaders)
-		allReferences = strings.Fields(refs[0])
+	return domainMsg, nil
+}
+
+// preserveMessageData - исправленная версия с правильным типом
+func (a *IMAPAdapter) preserveMessageData(imapMsg *imap.Message) ([]byte, error) {
+	a.logger.Info(context.Background(), "Starting CRITICAL message data preservation",
+		"available_sections", len(imapMsg.Body))
+
+	// Логируем доступные секции для диагностики
+	for sectionName, literal := range imapMsg.Body {
+		a.logger.Debug(context.Background(), "Available IMAP section",
+			"specifier", sectionName.Specifier, // ✅ sectionName уже указатель
+			"path", sectionName.Path,
+			"has_literal", literal != nil)
 	}
 
-	// ✅ ДОБАВЛЯЕМ References из envelope если есть
-	allReferences = append(allReferences, envelopeInfo.References...)
+	// Ищем подходящую секцию для чтения
+	for sectionName, literal := range imapMsg.Body {
+		if literal == nil {
+			continue
+		}
 
-	// ✅ УБИРАЕМ ДУБЛИКАТЫ
-	allReferences = removeDuplicateReferences(allReferences)
+		// ✅ ИСПРАВЛЕНО: передаем sectionName как указатель (как он и есть)
+		if a.isReadableSection(sectionName) {
+			data, err := io.ReadAll(literal)
+			if err != nil {
+				a.logger.Warn(context.Background(), "Failed to read section, trying next",
+					"section", sectionName.Specifier, "error", err.Error())
+				continue
+			}
 
-	// ✅ In-Reply-To из заголовков если нужно
-	finalInReplyTo := envelopeInfo.InReplyTo
-	if finalInReplyTo == "" {
-		if inReplyTos, exists := headers["In-Reply-To"]; exists && len(inReplyTos) > 0 {
-			finalInReplyTo = inReplyTos[0]
+			a.logger.Info(context.Background(), "✅ CRITICAL SUCCESS: Message data preserved",
+				"section", sectionName.Specifier,
+				"data_length", len(data),
+				"data_preview_first_200", a.getDataPreview(data, 200),
+				"has_headers", bytes.Contains(data, []byte("References:")),
+				"has_content_type", bytes.Contains(data, []byte("Content-Type:")))
+
+			return data, nil
 		}
 	}
 
-	// ✅ ЛОГИРУЕМ THREADING ДАННЫЕ
-	a.logger.Debug(context.Background(), "Threading data extracted",
-		"message_id", envelopeInfo.MessageID,
-		"in_reply_to", finalInReplyTo,
-		"references_count", len(allReferences),
-		"references", allReferences)
+	return nil, fmt.Errorf("no readable body sections found among %d available sections", len(imapMsg.Body))
+}
 
-	// Парсим тело сообщения и вложения
-	bodyInfo, err := a.parseMessageBody(imapMsg)
+// isReadableSection - исправленная версия для работы с указателем
+func (a *IMAPAdapter) isReadableSection(sectionName *imap.BodySectionName) bool {
+	if sectionName == nil {
+		return false
+	}
+
+	// ✅ Читаем все секции, которые могут содержать полное сообщение
+	readable := sectionName.Specifier == imap.EntireSpecifier || // BODY[]
+		sectionName.Specifier == imap.TextSpecifier || // BODY[TEXT]
+		sectionName.Specifier == "" || // RFC822
+		len(sectionName.Path) == 0 // корневая секция
+
+	a.logger.Debug(context.Background(), "Section readability check",
+		"specifier", sectionName.Specifier,
+		"path", sectionName.Path,
+		"is_readable", readable)
+
+	return readable
+}
+
+// extractHeadersFromPreservedData - УЛУЧШЕННАЯ ВЕРСИЯ extractAllHeaders
+func (a *IMAPAdapter) extractHeadersFromPreservedData(rawData []byte) map[string][]string {
+	headers := make(map[string][]string)
+
+	reader := bytes.NewReader(rawData)
+	scanner := bufio.NewScanner(reader)
+
+	var currentHeader string
+	var currentValue strings.Builder
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Конец заголовков
+		if line == "" {
+			break
+		}
+
+		// ✅ СОХРАНЯЕМ ПРОВЕРЕННУЮ ЛОГИКУ ДЛЯ МНОГОСТРОЧНЫХ REFERENCES
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			// Продолжение предыдущего заголовка
+			if currentHeader != "" {
+				currentValue.WriteString(" ")
+				currentValue.WriteString(strings.TrimSpace(line))
+			}
+		} else {
+			// Сохраняем предыдущий заголовок если есть
+			if currentHeader != "" {
+				headers[currentHeader] = append(headers[currentHeader], currentValue.String())
+				currentValue.Reset()
+			}
+
+			// Новый заголовок
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+
+			currentHeader = strings.TrimSpace(parts[0])
+			currentValue.WriteString(strings.TrimSpace(parts[1]))
+		}
+	}
+
+	// Сохраняем последний заголовок
+	if currentHeader != "" {
+		headers[currentHeader] = append(headers[currentHeader], currentValue.String())
+	}
+
+	// ✅ КРИТИЧЕСКАЯ ПРОВЕРКА REFERENCES - сохраняем диагностику
+	if refs, exists := headers["References"]; exists {
+		a.logger.Debug(context.Background(), "✅ References extracted using proven logic",
+			"raw_references", refs,
+			"references_count", len(refs),
+			"first_reference_length", len(refs[0]),
+			"has_multiline", strings.Contains(refs[0], "\n"))
+
+		// Детальная диагностика References
+		referencesList := strings.Fields(refs[0])
+		a.logger.Info(context.Background(), "References parsing details",
+			"raw_value", refs[0],
+			"parsed_count", len(referencesList),
+			"parsed_references", referencesList)
+	}
+
+	a.logger.Info(context.Background(), "Headers extraction completed",
+		"total_headers", len(headers),
+		"critical_headers", []string{"References", "In-Reply-To", "Message-ID"})
+
+	return headers
+}
+
+// parseBodyFromPreservedData - парсим тело из сохраненных данных
+func (a *IMAPAdapter) parseBodyFromPreservedData(rawData []byte) *MessageBodyInfo {
+	if len(rawData) == 0 {
+		a.logger.Warn(context.Background(), "Raw data is empty, cannot parse body")
+		return &MessageBodyInfo{}
+	}
+
+	mimeParser := NewMIMEParser(a.logger)
+	parsed, err := mimeParser.ParseMessage(rawData)
 	if err != nil {
-		return domain.EmailMessage{}, fmt.Errorf("failed to parse message body: %w", err)
+		a.logger.Error(context.Background(), "MIME parsing failed from preserved data",
+			"error", err.Error(),
+			"raw_data_length", len(rawData))
+		return &MessageBodyInfo{}
+	}
+
+	result := &MessageBodyInfo{
+		Text:        parsed.Text,
+		HTML:        parsed.HTML,
+		Attachments: parsed.Attachments,
+	}
+
+	a.logger.Info(context.Background(), "✅ Body parsed from preserved data",
+		"text_length", len(result.Text),
+		"html_length", len(result.HTML),
+		"attachments_count", len(result.Attachments),
+		"text_preview", a.getPreview(result.Text, 100))
+
+	return result
+}
+
+// extractThreadingData - УСИЛЕННАЯ ЛОГИКА ДЛЯ THREADING
+func (a *IMAPAdapter) extractThreadingData(headers map[string][]string, envelopeInfo *imapclient.EnvelopeInfo) []string {
+	var allReferences []string
+
+	// ✅ ПРИОРИТЕТ: References из заголовков (там полные данные)
+	if refs, exists := headers["References"]; exists && len(refs) > 0 {
+		// Используем ПРОВЕРЕННУЮ логику разбивки по пробелам
+		extracted := strings.Fields(refs[0])
+		allReferences = append(allReferences, extracted...)
+
+		a.logger.Debug(context.Background(), "References from headers processed",
+			"raw_header", refs[0],
+			"extracted_count", len(extracted),
+			"extracted_refs", extracted)
+	}
+
+	// ✅ ДОПОЛНЕНИЕ: References из envelope (если есть)
+	if envelopeInfo != nil && len(envelopeInfo.References) > 0 {
+		allReferences = append(allReferences, envelopeInfo.References...)
+		a.logger.Debug(context.Background(), "Added envelope references",
+			"envelope_refs_count", len(envelopeInfo.References),
+			"envelope_refs", envelopeInfo.References)
+	}
+
+	// Убираем дубликаты и пустые значения
+	allReferences = a.removeDuplicateReferences(allReferences)
+
+	a.logger.Info(context.Background(), "🎯 FINAL THREADING DATA",
+		"total_references", len(allReferences),
+		"references", allReferences,
+		"source", "headers+envelope")
+
+	return allReferences
+}
+
+// determineInReplyTo - исправленная версия
+func (a *IMAPAdapter) determineInReplyTo(headers map[string][]string, envelopeInfo *imapclient.EnvelopeInfo) string {
+	if envelopeInfo != nil && envelopeInfo.InReplyTo != "" {
+		return envelopeInfo.InReplyTo
+	}
+
+	if inReplyTos, exists := headers["In-Reply-To"]; exists && len(inReplyTos) > 0 {
+		return inReplyTos[0]
+	}
+
+	return ""
+}
+
+// buildDomainMessage - создаем финальное доменное сообщение
+// buildDomainMessage - исправленная версия
+func (a *IMAPAdapter) buildDomainMessage(
+	envelopeInfo *imapclient.EnvelopeInfo,
+	headers map[string][]string,
+	bodyInfo *MessageBodyInfo,
+	references []string,
+	inReplyTo string,
+) (domain.EmailMessage, error) {
+
+	if envelopeInfo == nil {
+		return domain.EmailMessage{}, fmt.Errorf("envelope info is required")
 	}
 
 	// Нормализуем адреса
@@ -796,11 +1015,10 @@ func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (dom
 	toAddrs := a.addressNormalizer.ConvertToDomainAddresses(envelopeInfo.To)
 	ccAddrs := a.addressNormalizer.ConvertToDomainAddresses(envelopeInfo.CC)
 
-	// ✅ СОЗДАЕМ ДОМЕННОЕ СООБЩЕНИЕ С ПОЛНЫМИ THREADING ДАННЫМИ
 	domainMsg := domain.EmailMessage{
 		MessageID:   envelopeInfo.MessageID,
-		InReplyTo:   finalInReplyTo,
-		References:  allReferences, // ✅ ВАЖНО: References должны быть заполнены для threading
+		InReplyTo:   inReplyTo,
+		References:  references,
 		From:        domain.EmailAddress(fromAddr),
 		To:          toAddrs,
 		CC:          ccAddrs,
@@ -815,27 +1033,48 @@ func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (dom
 		UpdatedAt:   time.Now(),
 	}
 
-	// ✅ ЛОГИРУЕМ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ
-	a.logger.Info(context.Background(), "Domain message converted with full threading data",
-		"message_id", domainMsg.MessageID,
-		"body_text_length", len(domainMsg.BodyText),
-		"in_reply_to", domainMsg.InReplyTo,
-		"references_count", len(domainMsg.References),
-		"attachments_count", len(domainMsg.Attachments))
-
 	return domainMsg, nil
 }
 
-// removeDuplicateReferences удаляет дубликаты References
-func removeDuplicateReferences(refs []string) []string {
+// validateMessageConversion - исправленная версия
+func (a *IMAPAdapter) validateMessageConversion(domainMsg domain.EmailMessage, rawData []byte) {
+	a.logger.Info(context.Background(), "🎯 MESSAGE CONVERSION VALIDATION",
+		"message_id", domainMsg.MessageID,
+		"raw_data_length", len(rawData),
+		"body_text_length", len(domainMsg.BodyText),
+		"body_html_length", len(domainMsg.BodyHTML),
+		"references_count", len(domainMsg.References),
+		"attachments_count", len(domainMsg.Attachments),
+		"has_threading_data", domainMsg.InReplyTo != "" || len(domainMsg.References) > 0)
+
+	// Критическая проверка - если нет контента, логируем предупреждение
+	if len(domainMsg.BodyText) == 0 && len(domainMsg.BodyHTML) == 0 {
+		a.logger.Warn(context.Background(), "⚠️ NO MESSAGE CONTENT EXTRACTED",
+			"message_id", domainMsg.MessageID,
+			"raw_data_sample", a.getDataPreview(rawData, 500))
+	} else {
+		a.logger.Info(context.Background(), "✅ SUCCESS: Message content extracted",
+			"text_preview", a.getPreview(domainMsg.BodyText, 100),
+			"html_preview", a.getPreview(domainMsg.BodyHTML, 100))
+	}
+}
+
+// removeDuplicateReferences - удаляем дубликаты (сохраняем порядок)
+func (a *IMAPAdapter) removeDuplicateReferences(refs []string) []string {
 	seen := make(map[string]bool)
 	var result []string
+
 	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
 		if !seen[ref] {
 			seen[ref] = true
 			result = append(result, ref)
 		}
 	}
+
 	return result
 }
 
@@ -1028,4 +1267,26 @@ func (a *IMAPAdapter) convertToDomainAddresses(addresses []string) []domain.Emai
 		result[i] = domain.EmailAddress(addr)
 	}
 	return result
+}
+
+// getDataPreview - вспомогательный метод для preview данных
+func (a *IMAPAdapter) getDataPreview(data []byte, length int) string {
+	if len(data) == 0 {
+		return "[empty]"
+	}
+	if len(data) <= length {
+		return string(data)
+	}
+	return string(data[:length]) + "..."
+}
+
+// getPreview - для текстового preview (из mime_parser.go, но как метод)
+func (a *IMAPAdapter) getPreview(text string, length int) string {
+	if text == "" {
+		return "[empty]"
+	}
+	if len(text) <= length {
+		return text
+	}
+	return text[:length] + "..."
 }
