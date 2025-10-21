@@ -380,13 +380,22 @@ func (r *TaskRepository) matchesQuery(task *domain.Task, query ports.TaskQuery) 
 // matchesSourceMeta проверяет соответствие задачи критериям поиска по мета-данным
 func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]interface{}) bool {
 	if task.SourceMeta == nil {
+		r.logger.Debug(context.Background(), "task has no source meta", "task_id", task.ID)
 		return false
 	}
+
+	// ✅ ЛОГИРУЕМ СРАВНЕНИЕ
+	r.logger.Debug(context.Background(), "comparing source meta",
+		"task_id", task.ID,
+		"task_source_meta", task.SourceMeta,
+		"search_meta", meta)
 
 	// Поиск по message_id
 	if messageID, exists := meta["message_id"]; exists {
 		if taskMsgID, exists := task.SourceMeta["message_id"]; exists {
 			if taskMsgID == messageID {
+				r.logger.Debug(context.Background(), "match found by message_id",
+					"task_id", task.ID, "message_id", messageID)
 				return true
 			}
 		}
@@ -396,6 +405,8 @@ func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]in
 	if inReplyTo, exists := meta["in_reply_to"]; exists {
 		if taskInReplyTo, exists := task.SourceMeta["in_reply_to"]; exists {
 			if taskInReplyTo == inReplyTo {
+				r.logger.Debug(context.Background(), "match found by in_reply_to",
+					"task_id", task.ID, "in_reply_to", inReplyTo)
 				return true
 			}
 		}
@@ -410,6 +421,8 @@ func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]in
 					for _, ref := range refs {
 						for _, taskRef := range taskRefsSlice {
 							if ref == taskRef {
+								r.logger.Debug(context.Background(), "match found by references",
+									"task_id", task.ID, "reference", ref)
 								return true
 							}
 						}
@@ -419,6 +432,8 @@ func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]in
 		}
 	}
 
+	r.logger.Debug(context.Background(), "no match found for task",
+		"task_id", task.ID)
 	return false
 }
 

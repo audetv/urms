@@ -1,9 +1,12 @@
 package email
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
@@ -135,18 +138,6 @@ func (a *IMAPAdapter) Connect(ctx context.Context) error {
 		return nil
 	})
 }
-
-// ✅ NEW: Вспомогательный метод для получения логгера с context
-// func (a *IMAPAdapter) getLogger(ctx context.Context) *zerolog.Logger {
-// 	// Временная реализация - в реальной реализации нужно интегрировать ports.Logger
-// 	logger := zerolog.Ctx(ctx)
-// 	if logger.GetLevel() == zerolog.Disabled {
-// 		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-// 		defaultLogger := zerolog.New(consoleWriter).With().Timestamp().Logger()
-// 		return &defaultLogger
-// 	}
-// 	return logger
-// }
 
 // Disconnect закрывает соединение
 func (a *IMAPAdapter) Disconnect() error {
@@ -372,6 +363,11 @@ func (a *IMAPAdapter) fetchMessageBatch(ctx context.Context, messageUIDs []uint3
 	a.logger.Debug(ctx, "Message batch conversion completed",
 		"operation", "fetch_batch",
 		"converted_messages", len(domainMessages))
+
+	// ✅ ЛОГИРУЕМ ВЕСЬ БАТЧ ПЕРЕД ВОЗВРАТОМ
+	a.logger.Debug(ctx, "Returning message batch",
+		"batch_size", len(domainMessages),
+		"first_message_references", domainMessages[0].References)
 
 	return domainMessages, nil
 }
@@ -670,32 +666,59 @@ func (a *IMAPAdapter) convertToIMAPCriteria(ctx context.Context, criteria ports.
 
 // convertToDomainMessage конвертирует IMAP сообщение в доменную сущность
 func (a *IMAPAdapter) convertToDomainMessage(imapMsg *imap.Message) (domain.EmailMessage, error) {
+	var email domain.EmailMessage
+
 	if imapMsg.Envelope == nil {
 		return domain.EmailMessage{}, fmt.Errorf("IMAP message has no envelope")
 	}
 
-	// Извлекаем базовую информацию
+	// Получаем базовую информацию из envelope
 	envelopeInfo := imapclient.GetMessageEnvelopeInfo(imapMsg)
-	if envelopeInfo == nil {
-		return domain.EmailMessage{}, fmt.Errorf("failed to extract envelope info")
+	if envelopeInfo != nil {
+		email.MessageID = envelopeInfo.MessageID
+		email.Subject = envelopeInfo.Subject
+		email.From = domain.EmailAddress(strings.Join(envelopeInfo.From, ", "))
+		email.InReplyTo = envelopeInfo.InReplyTo
+	}
+
+	// ✅ ПАРСИМ REFERENCES ИЗ ЗАГОЛОВКОВ
+	headers := a.extractAllHeaders(imapMsg)
+	if refs, exists := headers["References"]; exists && len(refs) > 0 {
+		// Теперь refs[0] содержит ВСЕ References в одной строке
+		// Просто разбиваем по пробелам
+		email.References = strings.Fields(refs[0])
+
+		// ✅ ЛОГИРУЕМ ДЛЯ ПРОВЕРКИ
+		a.logger.Debug(context.Background(), "Parsed references from headers",
+			"original_header", refs[0],
+			"parsed_references", email.References,
+			"references_count", len(email.References))
+	}
+
+	// ✅ ДОПОЛНЯЕМ: Если In-Reply-To пустой в envelope, берем из заголовков
+	if email.InReplyTo == "" {
+		if inReplyTos, exists := headers["In-Reply-To"]; exists && len(inReplyTos) > 0 {
+			email.InReplyTo = inReplyTos[0]
+		}
 	}
 
 	// Конвертируем адреса
 	from := a.extractPrimaryAddress(envelopeInfo.From)
 	to := a.extractAddresses(envelopeInfo.To)
 
-	// Создаем доменное сообщение
+	// ✅ ИСПРАВЛЯЕМ: Правильно создаем domainMsg со ВСЕМИ полями
 	domainMsg := domain.EmailMessage{
-		MessageID: envelopeInfo.MessageID,
-		InReplyTo: envelopeInfo.InReplyTo,
-		From:      domain.EmailAddress(from),
-		To:        a.convertToDomainAddresses(to),
-		Subject:   envelopeInfo.Subject,
-		Direction: domain.DirectionIncoming,
-		Source:    "imap",
-		CreatedAt: envelopeInfo.Date,
-		UpdatedAt: time.Now(),
-		Headers:   make(map[string][]string),
+		MessageID:  email.MessageID,
+		InReplyTo:  email.InReplyTo,
+		References: email.References, // ✅ КОПИРУЕМ ПРАВИЛЬНЫЕ REFERENCES
+		From:       domain.EmailAddress(from),
+		To:         a.convertToDomainAddresses(to),
+		Subject:    email.Subject,
+		Direction:  domain.DirectionIncoming,
+		Source:     "imap",
+		CreatedAt:  envelopeInfo.Date,
+		UpdatedAt:  time.Now(),
+		Headers:    make(map[string][]string),
 	}
 
 	// ✅ NEW: Сохраняем IMAP UID в headers для отслеживания
@@ -703,15 +726,53 @@ func (a *IMAPAdapter) convertToDomainMessage(imapMsg *imap.Message) (domain.Emai
 		domainMsg.Headers["X-IMAP-UID"] = []string{fmt.Sprintf("%d", imapMsg.Uid)}
 	}
 
-	// Добавляем References если есть
-	if len(imapMsg.Envelope.InReplyTo) > 0 {
-		for _, ref := range imapMsg.Envelope.InReplyTo {
-			domainMsg.References = append(domainMsg.References, string(ref))
-		}
-	}
+	// ✅ ЛОГИРУЕМ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ
+	a.logger.Debug(context.Background(), "Final domain message",
+		"message_id", domainMsg.MessageID,
+		"in_reply_to", domainMsg.InReplyTo,
+		"references", domainMsg.References,
+		"references_count", len(domainMsg.References))
 
 	return domainMsg, nil
 }
+
+// ✅ ДОБАВЛЯЕМ МЕТОД ДЛЯ ПРАВИЛЬНОГО ПАРСИНГА REFERENCES
+// func (a *IMAPAdapter) parseReferences(refsHeader string) []string {
+// 	var references []string
+// 	var currentRef strings.Builder
+// 	inBrackets := false
+
+// 	for _, char := range refsHeader {
+// 		switch char {
+// 		case '<':
+// 			inBrackets = true
+// 			currentRef.Reset()
+// 			currentRef.WriteRune(char)
+// 		case '>':
+// 			if inBrackets {
+// 				currentRef.WriteRune(char)
+// 				references = append(references, currentRef.String())
+// 				inBrackets = false
+// 			}
+// 		case ' ', '\t', '\n', '\r':
+// 			if inBrackets {
+// 				currentRef.WriteRune(char)
+// 			}
+// 		default:
+// 			if inBrackets {
+// 				currentRef.WriteRune(char)
+// 			}
+// 		}
+// 	}
+
+// 	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТ ПАРСИНГА
+// 	a.logger.Debug(context.Background(), "Parsed references",
+// 		"original_header", refsHeader,
+// 		"parsed_references", references,
+// 		"count", len(references))
+
+// 	return references
+// }
 
 // convertToDomainMessageWithBody конвертирует IMAP сообщение с полным парсингом
 func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (domain.EmailMessage, error) {
@@ -787,24 +848,71 @@ func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo,
 func (a *IMAPAdapter) extractAllHeaders(imapMsg *imap.Message) map[string][]string {
 	headers := make(map[string][]string)
 
-	if imapMsg.Body == nil {
+	if len(imapMsg.Body) == 0 {
 		return headers
 	}
 
-	// Временная реализация - извлекаем базовые заголовки из envelope
-	// Полный парсинг заголовков будет в MIME парсере
-	envelopeInfo := imapclient.GetMessageEnvelopeInfo(imapMsg)
-	if envelopeInfo != nil {
-		headers["From"] = envelopeInfo.From
-		headers["To"] = envelopeInfo.To
-		headers["Cc"] = envelopeInfo.CC
-		headers["Subject"] = []string{envelopeInfo.Subject}
-		headers["Message-ID"] = []string{envelopeInfo.MessageID}
-		headers["Date"] = []string{envelopeInfo.Date.Format(time.RFC1123Z)}
-
-		if envelopeInfo.InReplyTo != "" {
-			headers["In-Reply-To"] = []string{envelopeInfo.InReplyTo}
+	for _, body := range imapMsg.Body {
+		if body == nil {
+			continue
 		}
+
+		reader, ok := body.(io.Reader)
+		if !ok {
+			continue
+		}
+
+		scanner := bufio.NewScanner(reader)
+		var currentHeader string
+		var currentValue strings.Builder
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Конец заголовков
+			if line == "" {
+				break
+			}
+
+			// ✅ ИСПРАВЛЯЕМ: Обработка многострочных заголовков
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				// Продолжение предыдущего заголовка
+				if currentHeader != "" {
+					currentValue.WriteString(" ")
+					currentValue.WriteString(strings.TrimSpace(line))
+				}
+			} else {
+				// Сохраняем предыдущий заголовок если есть
+				if currentHeader != "" {
+					headers[currentHeader] = append(headers[currentHeader], currentValue.String())
+					currentValue.Reset()
+				}
+
+				// Новый заголовок
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) != 2 {
+					continue
+				}
+
+				currentHeader = strings.TrimSpace(parts[0])
+				currentValue.WriteString(strings.TrimSpace(parts[1]))
+			}
+		}
+
+		// Сохраняем последний заголовок
+		if currentHeader != "" {
+			headers[currentHeader] = append(headers[currentHeader], currentValue.String())
+		}
+
+		break // Только первый body part содержит заголовки
+	}
+
+	// ✅ ДОБАВЛЯЕМ ЛОГИРОВАНИЕ ДЛЯ ПРОВЕРКИ REFERENCES
+	if refs, exists := headers["References"]; exists {
+		a.logger.Debug(context.Background(), "Extracted References header",
+			"raw_references", refs,
+			"references_count", len(refs),
+			"first_reference_length", len(refs[0]))
 	}
 
 	return headers

@@ -1,7 +1,10 @@
 package imapclient
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -31,6 +34,7 @@ func GetMessageEnvelopeInfo(msg *imap.Message) *EnvelopeInfo {
 		MessageID: msg.Envelope.MessageId,
 		Subject:   msg.Envelope.Subject,
 		Date:      msg.Envelope.Date,
+		InReplyTo: msg.Envelope.InReplyTo, // ✅ ПРАВИЛЬНО: это строка
 	}
 
 	// From
@@ -48,15 +52,9 @@ func GetMessageEnvelopeInfo(msg *imap.Message) *EnvelopeInfo {
 	// ReplyTo
 	info.ReplyTo = extractAddresses(msg.Envelope.ReplyTo)
 
-	// In-Reply-To
-	if len(msg.Envelope.InReplyTo) > 0 {
-		info.InReplyTo = string(msg.Envelope.InReplyTo[0])
-	}
-
-	// References
-	for _, ref := range msg.Envelope.InReplyTo {
-		info.References = append(info.References, string(ref))
-	}
+	// ✅ References нужно парсить из заголовков тела сообщения
+	// Пока оставляем пустым, добавим позже
+	info.References = []string{}
 
 	return info
 }
@@ -115,4 +113,75 @@ func CreateSearchCriteriaSince(lastUID uint32) *imap.SearchCriteria {
 	}
 
 	return criteria
+}
+
+// GetMessageWithReferences извлекает информацию о письме включая References
+func GetMessageWithReferences(msg *imap.Message) *EnvelopeInfo {
+	info := GetMessageEnvelopeInfo(msg)
+	if info == nil {
+		return nil
+	}
+
+	// ✅ ПАРСИМ REFERENCES ИЗ ЗАГОЛОВКОВ
+	info.References = parseReferencesFromHeaders(msg, info)
+
+	return info
+}
+
+// parseReferencesFromHeaders парсит References из заголовков email
+func parseReferencesFromHeaders(msg *imap.Message, info *EnvelopeInfo) []string {
+	if len(msg.Body) == 0 {
+		return nil
+	}
+
+	var references []string
+
+	// Ищем References в каждом секторе тела
+	for _, body := range msg.Body {
+		if body == nil {
+			continue
+		}
+
+		// ✅ ПРАВИЛЬНО: imap.Literal реализует io.Reader
+		reader, ok := body.(io.Reader)
+		if !ok {
+			continue
+		}
+
+		// Читаем заголовки
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Конец заголовков
+			if line == "" {
+				break
+			}
+
+			// Ищем References заголовок
+			if strings.HasPrefix(strings.ToLower(line), "references:") {
+				refs := strings.TrimSpace(strings.TrimPrefix(line, "References:"))
+				// Разбиваем по пробелам (References могут быть через пробел)
+				if refs != "" {
+					references = strings.Fields(refs)
+					break
+				}
+			}
+
+			// ✅ ИСПРАВЛЕНО: используем переданный info
+			// Также ищем In-Reply-To если его нет в Envelope
+			if strings.HasPrefix(strings.ToLower(line), "in-reply-to:") && info.InReplyTo == "" {
+				inReplyTo := strings.TrimSpace(strings.TrimPrefix(line, "In-Reply-To:"))
+				if inReplyTo != "" {
+					info.InReplyTo = inReplyTo
+				}
+			}
+		}
+
+		if len(references) > 0 {
+			break
+		}
+	}
+
+	return references
 }

@@ -1,4 +1,6 @@
 .vscode
+.env
 test-imap
 tmp
 old
+1.json

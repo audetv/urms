@@ -199,6 +199,13 @@ func (p *MessageProcessor) findExistingTaskByThread(ctx context.Context, email d
 		searchMeta["references"] = email.References
 	}
 
+	// ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ
+	p.logger.Debug(ctx, "email threading search criteria",
+		"message_id", email.MessageID,
+		"in_reply_to", email.InReplyTo,
+		"references", email.References,
+		"search_meta", searchMeta)
+
 	// Если нет критериев для поиска - создаем новую задачу
 	if len(searchMeta) == 0 {
 		p.logger.Debug(ctx, "no thread criteria found for email",
@@ -214,6 +221,12 @@ func (p *MessageProcessor) findExistingTaskByThread(ctx context.Context, email d
 			"error", err.Error())
 		return nil, err
 	}
+
+	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТЫ ПОИСКА
+	p.logger.Debug(ctx, "email threading search results",
+		"message_id", email.MessageID,
+		"tasks_found", len(tasks),
+		"search_criteria", searchMeta)
 
 	// Возвращаем самую релевантную задачу (первую найденную)
 	if len(tasks) > 0 {
@@ -240,23 +253,26 @@ func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email dom
 	// Определяем категорию
 	category := p.determineCategory(ctx, email)
 
+	sourceMeta := p.buildSourceMeta(email)
+
 	req := ports.CreateSupportTaskRequest{
 		Subject:     p.normalizeSubject(email.Subject),
 		Description: p.buildTaskDescription(email),
 		CustomerID:  customerID,
 		ReporterID:  "system",
 		Source:      domain.SourceEmail,
-		SourceMeta:  p.buildSourceMeta(email), // ✅ Должен заполнять message_id, in_reply_to, references
+		SourceMeta:  sourceMeta,
 		Priority:    priority,
 		Category:    category,
 		Tags:        p.extractTags(ctx, email),
 	}
 
-	p.logger.Debug(ctx, "creating new task with source meta",
+	// ✅ ЛОГИРУЕМ СОЗДАНИЕ ЗАДАЧИ С SourceMeta
+	p.logger.Info(ctx, "creating new task with source meta",
 		"message_id", email.MessageID,
 		"in_reply_to", email.InReplyTo,
 		"references_count", len(email.References),
-		"source_meta", req.SourceMeta)
+		"source_meta", sourceMeta)
 
 	task, err := p.taskService.CreateSupportTask(ctx, req)
 	if err != nil {
@@ -421,12 +437,14 @@ func (p *MessageProcessor) buildMessageContent(email domain.EmailMessage) string
 	return content.String()
 }
 
+// Исправляем метод buildSourceMeta
 func (p *MessageProcessor) buildSourceMeta(email domain.EmailMessage) map[string]interface{} {
 	meta := map[string]interface{}{
 		"message_id":  email.MessageID,
 		"in_reply_to": email.InReplyTo,
-		"references":  email.References,
-		"headers":     email.Headers,
+		// ✅ ИСПРАВЛЯЕМ: References должны быть массивом строк, не разбиваться на символы
+		"references": email.References, // Уже правильный массив из convertToDomainMessage
+		"headers":    email.Headers,
 	}
 
 	if len(email.Attachments) > 0 {
@@ -440,6 +458,13 @@ func (p *MessageProcessor) buildSourceMeta(email domain.EmailMessage) map[string
 		}
 		meta["attachments"] = attachments
 	}
+
+	// ✅ ДОБАВЛЯЕМ ЛОГИРОВАНИЕ ДЛЯ ПРОВЕРКИ
+	p.logger.Debug(context.Background(), "built source meta",
+		"message_id", email.MessageID,
+		"in_reply_to", email.InReplyTo,
+		"references", email.References,
+		"references_count", len(email.References))
 
 	return meta
 }

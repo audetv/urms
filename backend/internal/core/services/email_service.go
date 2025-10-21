@@ -59,7 +59,7 @@ func (s *EmailService) ProcessIncomingEmails(ctx context.Context) error {
 		Since:      s.getLastPollTime(),
 		Mailbox:    "INBOX",
 		Limit:      100,
-		UnseenOnly: true,
+		UnseenOnly: true, // ✅ Получаем все сообщения
 	}
 
 	s.logger.Debug(ctx, "Fetching messages with criteria",
