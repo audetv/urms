@@ -37,7 +37,9 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		"message_id", email.MessageID,
 		"from", email.From,
 		"subject", email.Subject,
-		"in_reply_to", email.InReplyTo,
+		"body_text_length", len(email.BodyText), // ✅ Логируем длину контента
+		"body_html_length", len(email.BodyHTML),
+		"attachments_count", len(email.Attachments),
 		"operation", "advanced_process_incoming_email")
 
 	// 1. Валидация email
@@ -415,6 +417,7 @@ func (p *MessageProcessor) determineCategory(ctx context.Context, email domain.E
 	return "general"
 }
 
+// buildTaskDescription создает описание задачи из email
 func (p *MessageProcessor) buildTaskDescription(email domain.EmailMessage) string {
 	var description strings.Builder
 
@@ -423,31 +426,46 @@ func (p *MessageProcessor) buildTaskDescription(email domain.EmailMessage) strin
 	description.WriteString("Тема: " + email.Subject + "\n")
 	description.WriteString("Дата: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
 
+	// ✅ ИСПОЛЬЗУЕМ РЕАЛЬНОЕ СОДЕРЖАНИЕ для описания задачи
 	if email.BodyText != "" {
 		description.WriteString("Содержимое сообщения:\n")
-		description.WriteString(email.BodyText)
+		// Обрезаем слишком длинные сообщения для описания
+		if len(email.BodyText) > 500 {
+			description.WriteString(email.BodyText[:500] + "...")
+		} else {
+			description.WriteString(email.BodyText)
+		}
 	} else if email.BodyHTML != "" {
 		description.WriteString("Содержимое сообщения (HTML):\n")
-		// TODO: Конвертировать HTML в текст
-		description.WriteString("[HTML content]")
+		description.WriteString("[HTML content - see messages for full text]")
+	} else {
+		description.WriteString("Сообщение не содержит текста.")
 	}
 
 	return description.String()
 }
 
+// buildMessageContent создает содержимое сообщения из email
 func (p *MessageProcessor) buildMessageContent(email domain.EmailMessage) string {
 	var content strings.Builder
 
-	content.WriteString("Новое сообщение от клиента:\n\n")
-
+	// ✅ ИСПОЛЬЗУЕМ РЕАЛЬНОЕ СОДЕРЖАНИЕ ПИСЬМА вместо заглушки
 	if email.BodyText != "" {
 		content.WriteString(email.BodyText)
 	} else if email.BodyHTML != "" {
-		content.WriteString("[HTML content]")
+		// TODO: Конвертировать HTML в текст
+		content.WriteString("[HTML content - needs conversion]")
+	} else {
+		content.WriteString("[No message content]")
 	}
 
+	// Добавляем информацию о вложениях
 	if len(email.Attachments) > 0 {
-		content.WriteString(fmt.Sprintf("\n\nВложения: %d файл(ов)", len(email.Attachments)))
+		content.WriteString(fmt.Sprintf("\n\n📎 Вложения: %d файл(ов)", len(email.Attachments)))
+		for _, att := range email.Attachments {
+			content.WriteString(fmt.Sprintf("\n- %s (%s, %d bytes)",
+				att.Name, att.ContentType, att.Size))
+		}
 	}
 
 	return content.String()
