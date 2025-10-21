@@ -384,45 +384,52 @@ func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]in
 		return false
 	}
 
-	// ✅ ЛОГИРУЕМ СРАВНЕНИЕ
-	r.logger.Debug(context.Background(), "comparing source meta",
+	// ✅ ЛОГИРУЕМ ВСЕ КРИТЕРИИ ПОИСКА
+	r.logger.Debug(context.Background(), "Thread matching evaluation",
 		"task_id", task.ID,
-		"task_source_meta", task.SourceMeta,
-		"search_meta", meta)
+		"task_message_id", task.SourceMeta["message_id"],
+		"task_in_reply_to", task.SourceMeta["in_reply_to"],
+		"task_references", task.SourceMeta["references"],
+		"search_message_id", meta["message_id"],
+		"search_in_reply_to", meta["in_reply_to"],
+		"search_references", meta["references"])
 
-	// Поиск по message_id
-	if messageID, exists := meta["message_id"]; exists {
+	// 1. Поиск по точному Message-ID (ВЫСОКИЙ ПРИОРИТЕТ)
+	if messageID, exists := meta["message_id"]; exists && messageID != "" {
 		if taskMsgID, exists := task.SourceMeta["message_id"]; exists {
 			if taskMsgID == messageID {
-				r.logger.Debug(context.Background(), "match found by message_id",
+				r.logger.Debug(context.Background(), "✅ MATCH by message_id",
 					"task_id", task.ID, "message_id", messageID)
 				return true
 			}
 		}
 	}
 
-	// Поиск по in_reply_to
-	if inReplyTo, exists := meta["in_reply_to"]; exists {
+	// 2. Поиск по In-Reply-To (ВЫСОКИЙ ПРИОРИТЕТ)
+	if inReplyTo, exists := meta["in_reply_to"]; exists && inReplyTo != "" {
 		if taskInReplyTo, exists := task.SourceMeta["in_reply_to"]; exists {
 			if taskInReplyTo == inReplyTo {
-				r.logger.Debug(context.Background(), "match found by in_reply_to",
+				r.logger.Debug(context.Background(), "✅ MATCH by in_reply_to",
 					"task_id", task.ID, "in_reply_to", inReplyTo)
 				return true
 			}
 		}
 	}
 
-	// Поиск по references (цепочка писем)
+	// 3. Поиск по References (НИЗКИЙ ПРИОРИТЕТ - проверяем все references)
 	if references, exists := meta["references"]; exists {
-		if refs, ok := references.([]string); ok {
+		if searchRefs, ok := references.([]string); ok && len(searchRefs) > 0 {
 			if taskRefs, exists := task.SourceMeta["references"]; exists {
 				if taskRefsSlice, ok := taskRefs.([]string); ok {
-					// Проверяем пересечение references
-					for _, ref := range refs {
+					// ✅ ПРОВЕРЯЕМ ВСЕ REFERENCES ИЗ ПОИСКА
+					for _, searchRef := range searchRefs {
 						for _, taskRef := range taskRefsSlice {
-							if ref == taskRef {
-								r.logger.Debug(context.Background(), "match found by references",
-									"task_id", task.ID, "reference", ref)
+							if searchRef == taskRef {
+								r.logger.Debug(context.Background(), "✅ MATCH by references",
+									"task_id", task.ID,
+									"matching_reference", searchRef,
+									"search_refs_count", len(searchRefs),
+									"task_refs_count", len(taskRefsSlice))
 								return true
 							}
 						}
@@ -432,7 +439,7 @@ func (r *TaskRepository) matchesSourceMeta(task *domain.Task, meta map[string]in
 		}
 	}
 
-	r.logger.Debug(context.Background(), "no match found for task",
+	r.logger.Debug(context.Background(), "❌ NO MATCH found for task",
 		"task_id", task.ID)
 	return false
 }

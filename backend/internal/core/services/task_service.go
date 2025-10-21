@@ -52,6 +52,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req ports.CreateTaskReques
 			*req.CustomerID,
 			req.ReporterID,
 			req.Source,
+			req.SourceMeta, // ✅ ПЕРЕДАЕМ SourceMeta
 		)
 	case domain.TaskTypeInternal:
 		task, err = domain.NewTask(
@@ -59,6 +60,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req ports.CreateTaskReques
 			req.Subject,
 			req.Description,
 			req.ReporterID,
+			req.SourceMeta, // ✅ ПЕРЕДАЕМ SourceMeta
 		)
 	case domain.TaskTypeSubTask:
 		if req.ParentID == nil {
@@ -69,6 +71,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req ports.CreateTaskReques
 			req.Subject,
 			req.Description,
 			req.ReporterID,
+			req.SourceMeta, // ✅ ПЕРЕДАЕМ SourceMeta
 		)
 	default:
 		return nil, fmt.Errorf("unsupported task type: %s", req.Type)

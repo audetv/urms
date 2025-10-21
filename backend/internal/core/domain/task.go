@@ -83,6 +83,7 @@ func NewTask(
 	subject string,
 	description string,
 	reporterID string,
+	sourceMeta map[string]interface{}, // ✅ ДОБАВЛЯЕМ sourceMeta параметр
 ) (*Task, error) {
 
 	if subject == "" {
@@ -90,6 +91,11 @@ func NewTask(
 	}
 	if description == "" {
 		return nil, errors.New("description is required")
+	}
+
+	// ✅ ОБРАБАТЫВАЕМ nil SourceMeta
+	if sourceMeta == nil {
+		sourceMeta = make(map[string]interface{})
 	}
 
 	now := time.Now()
@@ -102,7 +108,7 @@ func NewTask(
 		Priority:    PriorityMedium,
 		ReporterID:  reporterID,
 		Source:      SourceInternal,
-		SourceMeta:  make(map[string]interface{}),
+		SourceMeta:  sourceMeta, // ✅ ИСПОЛЬЗУЕМ sourceMeta вместо пустого map
 		Tags:        []string{},
 		Participants: []Participant{
 			{
@@ -129,9 +135,10 @@ func NewSupportTask(
 	customerID string,
 	reporterID string,
 	source TaskSource,
+	sourceMeta map[string]interface{}, // ✅ ДОБАВЛЯЕМ sourceMeta параметр
 ) (*Task, error) {
 
-	task, err := NewTask(TaskTypeSupport, subject, description, reporterID)
+	task, err := NewTask(TaskTypeSupport, subject, description, reporterID, sourceMeta) // ✅ ПЕРЕДАЕМ sourceMeta
 	if err != nil {
 		return nil, err
 	}
@@ -148,9 +155,10 @@ func NewSubTask(
 	subject string,
 	description string,
 	reporterID string,
+	sourceMeta map[string]interface{}, // ✅ ДОБАВЛЯЕМ sourceMeta параметр
 ) (*Task, error) {
 
-	task, err := NewTask(TaskTypeSubTask, subject, description, reporterID)
+	task, err := NewTask(TaskTypeSubTask, subject, description, reporterID, sourceMeta) // ✅ ПЕРЕДАЕМ sourceMeta
 	if err != nil {
 		return nil, err
 	}

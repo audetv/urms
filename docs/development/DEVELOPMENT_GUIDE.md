@@ -34,3 +34,8 @@ docker compose -f docker-compose.db.yml down
 - 🔄 SQLite - Architecture ready, implementation planned
 
 **Current implementation uses PostgreSQL-specific SQL syntax.**
+
+### Пример запуска приложения с отображением лого определнной категории, полезно для отладки и дял лотпраки в чат.
+```bash
+ go run cmd/api/main.go 2>&1 | grep -E "(Thread matching|MATCH by|NO MATCH|Creating new task|source_meta|task_source_meta)"
+ ```

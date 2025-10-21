@@ -199,6 +199,22 @@ func (p *MessageProcessor) findExistingTaskByThread(ctx context.Context, email d
 		searchMeta["references"] = email.References
 	}
 
+	// ✅ ЛОГИРУЕМ ВСЕ ЗАДАЧИ В СИСТЕМЕ ДЛЯ АНАЛИЗА
+	allTasks, err := p.taskService.SearchTasks(ctx, ports.TaskQuery{Limit: 100})
+	if err == nil {
+		p.logger.Debug(ctx, "Existing tasks in system for thread analysis",
+			"total_tasks", len(allTasks.Tasks),
+			"email_message_id", email.MessageID)
+
+		for i, task := range allTasks.Tasks {
+			p.logger.Debug(ctx, "Task analysis",
+				"index", i,
+				"task_id", task.ID,
+				"task_subject", task.Subject,
+				"task_source_meta", task.SourceMeta)
+		}
+	}
+
 	// ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ
 	p.logger.Debug(ctx, "email threading search criteria",
 		"message_id", email.MessageID,
