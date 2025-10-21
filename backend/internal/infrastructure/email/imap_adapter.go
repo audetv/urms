@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"strconv"
 	"strings"
 	"time"
@@ -60,7 +59,7 @@ func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig, logg
 	return &IMAPAdapter{
 		client:            imapclient.NewClient(config),
 		config:            config,
-		mimeParser:        NewMIMEParser(),
+		mimeParser:        NewMIMEParser(logger),
 		addressNormalizer: NewAddressNormalizer(),
 		retryManager:      NewRetryManager(retryConfig, logger),
 		timeoutConfig:     timeoutConfig,
@@ -81,7 +80,7 @@ func NewIMAPAdapterWithTimeouts(config *imapclient.Config, timeoutConfig Timeout
 	return &IMAPAdapter{
 		client:            imapclient.NewClient(config),
 		config:            config,
-		mimeParser:        NewMIMEParser(),
+		mimeParser:        NewMIMEParser(logger),
 		addressNormalizer: NewAddressNormalizer(),
 		retryManager:      NewRetryManager(retryConfig, logger),
 		timeoutConfig:     timeoutConfig,
@@ -751,14 +750,42 @@ func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (dom
 		return domain.EmailMessage{}, fmt.Errorf("failed to extract envelope info")
 	}
 
+	// ✅ ВОССТАНАВЛИВАЕМ РАБОТАЮЩИЙ ПАРСИНГ REFERENCES ИЗ ЗАГОЛОВКОВ
+	headers := a.extractAllHeaders(imapMsg)
+
+	// ✅ ИЗВЛЕКАЕМ REFERENCES ИЗ ЗАГОЛОВКОВ (как это работало ранее)
+	var allReferences []string
+	if refs, exists := headers["References"]; exists && len(refs) > 0 {
+		// ✅ РАЗБИВАЕМ MULTILINE REFERENCES ПО ПРОБЕЛАМ (уже объединенные в extractAllHeaders)
+		allReferences = strings.Fields(refs[0])
+	}
+
+	// ✅ ДОБАВЛЯЕМ References из envelope если есть
+	allReferences = append(allReferences, envelopeInfo.References...)
+
+	// ✅ УБИРАЕМ ДУБЛИКАТЫ
+	allReferences = removeDuplicateReferences(allReferences)
+
+	// ✅ In-Reply-To из заголовков если нужно
+	finalInReplyTo := envelopeInfo.InReplyTo
+	if finalInReplyTo == "" {
+		if inReplyTos, exists := headers["In-Reply-To"]; exists && len(inReplyTos) > 0 {
+			finalInReplyTo = inReplyTos[0]
+		}
+	}
+
+	// ✅ ЛОГИРУЕМ THREADING ДАННЫЕ
+	a.logger.Debug(context.Background(), "Threading data extracted",
+		"message_id", envelopeInfo.MessageID,
+		"in_reply_to", finalInReplyTo,
+		"references_count", len(allReferences),
+		"references", allReferences)
+
 	// Парсим тело сообщения и вложения
 	bodyInfo, err := a.parseMessageBody(imapMsg)
 	if err != nil {
 		return domain.EmailMessage{}, fmt.Errorf("failed to parse message body: %w", err)
 	}
-
-	// Извлекаем все RFC заголовки
-	headers := a.extractAllHeaders(imapMsg)
 
 	// Нормализуем адреса
 	fromAddr, err := a.addressNormalizer.NormalizeEmailAddress(envelopeInfo.From[0])
@@ -769,11 +796,11 @@ func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (dom
 	toAddrs := a.addressNormalizer.ConvertToDomainAddresses(envelopeInfo.To)
 	ccAddrs := a.addressNormalizer.ConvertToDomainAddresses(envelopeInfo.CC)
 
-	// Создаем доменное сообщение с полной информацией
+	// ✅ СОЗДАЕМ ДОМЕННОЕ СООБЩЕНИЕ С ПОЛНЫМИ THREADING ДАННЫМИ
 	domainMsg := domain.EmailMessage{
 		MessageID:   envelopeInfo.MessageID,
-		InReplyTo:   envelopeInfo.InReplyTo,
-		References:  envelopeInfo.References,
+		InReplyTo:   finalInReplyTo,
+		References:  allReferences, // ✅ ВАЖНО: References должны быть заполнены для threading
 		From:        domain.EmailAddress(fromAddr),
 		To:          toAddrs,
 		CC:          ccAddrs,
@@ -788,7 +815,28 @@ func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (dom
 		UpdatedAt:   time.Now(),
 	}
 
+	// ✅ ЛОГИРУЕМ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ
+	a.logger.Info(context.Background(), "Domain message converted with full threading data",
+		"message_id", domainMsg.MessageID,
+		"body_text_length", len(domainMsg.BodyText),
+		"in_reply_to", domainMsg.InReplyTo,
+		"references_count", len(domainMsg.References),
+		"attachments_count", len(domainMsg.Attachments))
+
 	return domainMsg, nil
+}
+
+// removeDuplicateReferences удаляет дубликаты References
+func removeDuplicateReferences(refs []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, ref := range refs {
+		if !seen[ref] {
+			seen[ref] = true
+			result = append(result, ref)
+		}
+	}
+	return result
 }
 
 // parseMessageBody парсит тело сообщения из RFC822 секции
@@ -812,7 +860,6 @@ func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo,
 			"has_literal", literal != nil)
 
 		// ✅ ПРАВИЛЬНО: Сравниваем по Specifier, а не по строке
-		// Ищем секции содержащие полное сообщение
 		if sectionName.Specifier == imap.EntireSpecifier || // BODY[]
 			sectionName.Specifier == imap.TextSpecifier || // BODY[TEXT]
 			(sectionName.Specifier == "" && len(sectionName.Path) == 0) { // RFC822
@@ -823,7 +870,8 @@ func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo,
 				continue
 			}
 
-			data, err := ioutil.ReadAll(literal)
+			// ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Сохраняем данные при первом чтении
+			data, err := io.ReadAll(literal)
 			if err != nil {
 				a.logger.Warn(context.Background(), "Failed to read body section",
 					"specifier", sectionName.Specifier,
@@ -831,14 +879,15 @@ func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo,
 				continue
 			}
 
-			a.logger.Debug(context.Background(), "Body section data read",
+			// ✅ ДИАГНОСТИКА: Логируем реальные данные
+			a.logger.Info(context.Background(), "Found body section with data",
 				"specifier", sectionName.Specifier,
-				"path", sectionName.Path,
-				"data_length", len(data))
+				"data_length", len(data),
+				"data_preview", string(data[:min(200, len(data))]))
 
-			// ✅ ПЕРЕДАЕМ В MIME ПАРСЕР
-			mimeParser := NewMIMEParser()
-			parsed, err := mimeParser.ParseMessage(data)
+			// ✅ ПЕРЕДАЕМ СОХРАНЕННЫЕ ДАННЫЕ В MIME ПАРСЕР
+			mimeParser := NewMIMEParser(a.logger)
+			parsed, err := mimeParser.ParseMessage(data) // ← Используем СОХРАНЕННЫЕ данные
 			if err != nil {
 				a.logger.Warn(context.Background(), "MIME parsing failed",
 					"specifier", sectionName.Specifier,
@@ -850,27 +899,18 @@ func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo,
 			bodyInfo.HTML = parsed.HTML
 			bodyInfo.Attachments = parsed.Attachments
 
-			a.logger.Info(context.Background(), "MIME parsing successful",
+			a.logger.Info(context.Background(), "MIME parsing completed with content",
 				"specifier", sectionName.Specifier,
 				"text_length", len(bodyInfo.Text),
 				"html_length", len(bodyInfo.HTML),
-				"attachments_count", len(bodyInfo.Attachments))
+				"attachments_count", len(bodyInfo.Attachments),
+				"text_preview", getPreview(bodyInfo.Text, 100))
 
 			return bodyInfo, nil
 		}
 	}
 
-	// ✅ ЛОГИРУЕМ ВСЕ ДОСТУПНЫЕ СЕКЦИИ ДЛЯ ДИАГНОСТИКИ
-	a.logger.Debug(context.Background(), "Available IMAP body sections for diagnosis",
-		"total_sections", len(imapMsg.Body))
-
-	for sectionName, literal := range imapMsg.Body {
-		a.logger.Debug(context.Background(), "IMAP section info",
-			"specifier", sectionName.Specifier,
-			"path", sectionName.Path,
-			"has_literal", literal != nil)
-	}
-
+	a.logger.Warn(context.Background(), "No suitable body sections found")
 	return bodyInfo, nil
 }
 

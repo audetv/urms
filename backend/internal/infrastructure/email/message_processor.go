@@ -42,6 +42,13 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		"attachments_count", len(email.Attachments),
 		"operation", "advanced_process_incoming_email")
 
+	// В ProcessIncomingEmail добавляем диагностику
+	p.logger.Debug(ctx, "Email data for processing",
+		"message_id", email.MessageID,
+		"body_text_length", len(email.BodyText),
+		"body_html_length", len(email.BodyHTML),
+		"has_content", email.BodyText != "" || email.BodyHTML != "")
+
 	// 1. Валидация email
 	if err := p.validateIncomingEmail(ctx, email); err != nil {
 		p.logger.Error(ctx, "Incoming email validation failed",
