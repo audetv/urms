@@ -298,7 +298,7 @@ func (p *IMAPPoller) pollNewMessages() error {
 
 ## 🔍 Best Practices from Industry
 
-### Jira-like Email Handling
+### Jira-like Email Handling (best practices (Jira/Zendesk))
 
 1. Message-ID based threading - золотой стандарт
 2. Special headers for metadata - не нарушают RFC
