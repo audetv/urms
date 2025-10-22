@@ -365,9 +365,10 @@ func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email dom
 	// ✅ ИСПОЛЬЗУЕМ НОВУЮ АРХИТЕКТУРУ ДЛЯ SOURCE META
 	sourceMeta := p.buildSourceMeta(headers, email)
 
+	// ✅ ИСПРАВЛЯЕМ: Description должен содержать только мета-информацию, не содержимое письма
 	req := ports.CreateSupportTaskRequest{
 		Subject:     p.normalizeSubject(headers.Subject),
-		Description: p.buildTaskDescription(email, headers),
+		Description: p.buildTaskMetaDescription(email, headers), // ✅ НОВЫЙ МЕТОД - только мета-информация
 		CustomerID:  customerID,
 		ReporterID:  "system",
 		Source:      domain.SourceEmail,
@@ -377,21 +378,59 @@ func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email dom
 		Tags:        p.extractTags(ctx, email),
 	}
 
-	// ✅ ЛОГИРУЕМ СОЗДАНИЕ ЗАДАЧИ С OPTIMIZED SOURCE META
-	p.logger.Info(ctx, "Creating new task with OPTIMIZED source meta",
+	p.logger.Info(ctx, "Creating new task with first email as message",
 		"message_id", headers.MessageID,
-		"in_reply_to", headers.InReplyTo,
-		"references_count", len(headers.References),
-		"source_meta_size", fmt.Sprintf("%d keys", len(sourceMeta)),
-		"headers_optimized", true)
+		"subject", headers.Subject)
 
+	// Создаем задачу
 	task, err := p.taskService.CreateSupportTask(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create support task: %w", err)
 	}
 
-	return task, nil
+	// ✅ ДОБАВЛЯЕМ: Создаем сообщение для первого письма
+	messageReq := ports.AddMessageRequest{
+		AuthorID:  customerID,
+		Content:   p.buildMessageContent(email), // Используем реальное содержимое письма
+		Type:      domain.MessageTypeCustomer,
+		IsPrivate: false,
+	}
+
+	taskWithMessage, err := p.taskService.AddMessage(ctx, task.ID, messageReq)
+	if err != nil {
+		p.logger.Warn(ctx, "Failed to add first message to new task",
+			"task_id", task.ID,
+			"message_id", email.MessageID,
+			"error", err.Error())
+		return task, nil // Возвращаем задачу даже если не удалось добавить сообщение
+	}
+
+	p.logger.Info(ctx, "First message added to new task",
+		"task_id", taskWithMessage.ID,
+		"message_id", email.MessageID,
+		"content_length", len(messageReq.Content))
+
+	return taskWithMessage, nil
 }
+
+// ✅ НОВЫЙ МЕТОД: Создает description только с мета-информацией
+func (p *MessageProcessor) buildTaskMetaDescription(email domain.EmailMessage, headers *domain.EmailHeaders) string {
+	var description strings.Builder
+
+	description.WriteString("Заявка создана автоматически из входящего email.\n\n")
+	description.WriteString("От: " + string(headers.From) + "\n")
+	description.WriteString("Тема: " + headers.Subject + "\n")
+	description.WriteString("Дата: " + headers.Date.Format("2006-01-02 15:04:05") + "\n")
+	description.WriteString("Сообщений в цепочке: определяется автоматически\n\n")
+
+	// ✅ НЕ включаем содержимое письма - оно будет в отдельном сообщении
+	description.WriteString("Содержимое первого сообщения доступно в истории переписки.")
+
+	return description.String()
+}
+
+// ✅ СУЩЕСТВУЮЩИЙ МЕТОД buildMessageContent используется для содержимого сообщения
+// Он уже возвращает реальное содержимое письма
 
 // addMessageToExistingTask добавляет сообщение в существующую задачу
 func (p *MessageProcessor) addMessageToExistingTask(ctx context.Context, task *domain.Task, email domain.EmailMessage, customerID string, headers *domain.EmailHeaders) (*domain.Task, error) {
