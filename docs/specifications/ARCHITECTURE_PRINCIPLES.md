@@ -1,5 +1,5 @@
 # URMS-OS Architecture Principles
-**Version: 1.0** | **Project: Unified Request Management System**  
+**Version: 1.1** | **Project: Unified Request Management System**  
 **License: Apache 2.0** | **Status: Active**
 
 ## 🎯 Core Philosophy: "No Vendor Lock-in"
@@ -34,6 +34,65 @@
 - **Document architectural decisions** thoroughly
 - **Write tests for new patterns** before widespread implementation
 
+## 🏗️ ARCHITECTURAL PATTERNS FROM PHASE 3B
+
+### Pattern: EmailHeaders Value Object
+```go
+// Domain-centric representation of essential data only
+type EmailHeaders struct {
+    MessageID  string          // Business identifier
+    InReplyTo  string          // Threading data
+    References []string        // Threading data  
+    Subject    string          // Business content
+    From       EmailAddress    // Business entity
+    To         []EmailAddress  // Business entities
+    // ONLY business-significant headers - no technical metadata
+}
+```
+**Principles:**
+- Value Objects contain ONLY business-significant data
+- No technical headers (Received, DKIM, etc.)
+- Immutable and validated on creation
+- Domain layer purity maintained
+
+### Pattern: HeaderFilter Service
+```go
+// Infrastructure service for data filtering and sanitization
+type HeaderFilter struct {
+    logger ports.Logger
+}
+
+func (f *HeaderFilter) FilterEssentialHeaders(
+    rawHeaders map[string][]string,
+) (*domain.EmailHeaders, error) {
+    // Extracts only business-essential headers
+    // Removes sensitive information (IP, tracking, auth)
+    // Preserves threading data integrity
+}
+```
+**Principles:**
+- Separation of concerns: filtering logic in infrastructure
+- Security: automatic removal of sensitive data
+- Performance: 70-80% data reduction achieved
+- Threading integrity: all business data preserved
+
+### Principle: Systematic Interface Updates
+**When modifying interfaces:**
+1. **Update ALL implementations** simultaneously
+2. **Update ALL test mocks** and contracts
+3. **Update ALL constructors** and dependency injections
+4. **Verify compilation** across entire codebase
+
+**Example from Phase 3B:**
+```go
+// Adding SearchThreadMessages to EmailGateway required:
+- IMAPAdapter implementation
+- HealthCheckAdapter delegation  
+- 7+ test mock updates
+- MessageProcessor constructor updates
+- Main.go dependency wiring
+```
+
 ## 🏗️ Project Structure Convention
 
 ```text
@@ -57,6 +116,8 @@ urms-os/
 - Use Dependency Injection for all external services
 - Write contract tests for all interfaces
 - Export/import data in standard formats (JSON/CSV)
+- **Update ALL implementations** when interfaces change
+- **Create Value Objects** for domain data representations
 
 ### ❌ DON'Ts  
 - Import from `infrastructure/` in `core/` 
@@ -64,6 +125,8 @@ urms-os/
 - Put business logic in adapters
 - Create vendor-specific database schemas
 - Hardcode API keys or endpoints
+- **Make partial interface updates** - update ALL or NONE
+- **Store technical metadata** in domain models
 
 ## 📚 Development Philosophy
 
@@ -72,11 +135,13 @@ urms-os/
 - **Living Documentation**: Документы обновляются параллельно с кодом
 - **Session Handover**: Каждая сессия начинается с обновления документации
 - **AI Context**: Документация обеспечивает контекст для AI агентов
+- **Architectural Decisions**: Фиксировать принятые паттерны и принципы
 
 ### Testing-Driven Development  
 - **Test Results are Documentation**: Результаты тестов фиксируются в документации
 - **Reproduction Steps**: Проблемы документируются с шагами воспроизведения
 - **Progress Tracking**: Статус выполнения фиксируется после каждой сессии
+- **Systematic Test Updates**: Все тесты обновляются при architectural changes
 
 ## 🔧 Implementation Patterns
 
@@ -101,6 +166,26 @@ const (
     PriorityLow Priority = iota
     PriorityHigh
 )
+```
+
+### Value Objects (NEW PATTERN)
+```go
+// ✅ GOOD: Domain-centric data representation
+package domain
+
+type EmailHeaders struct {
+    MessageID  string
+    InReplyTo  string  
+    References []string
+    Subject    string
+    From       EmailAddress
+    // ONLY business data - no technical headers
+}
+
+func NewEmailHeaders(email *EmailMessage) (*EmailHeaders, error) {
+    // Validation and business logic only
+    // No external dependencies
+}
 ```
 
 ### Ports (Interfaces)
@@ -135,6 +220,24 @@ func (r *PostgresTicketRepository) Save(ticket *domain.Ticket) error {
 }
 ```
 
+### Filter Services (NEW PATTERN)
+```go
+// ✅ GOOD: Infrastructure service for data processing
+package infrastructure
+
+type HeaderFilter struct {
+    logger ports.Logger
+}
+
+func (f *HeaderFilter) FilterEssentialHeaders(
+    email *domain.EmailMessage,
+) (*domain.EmailHeaders, error) {
+    // Transforms external data to domain representation
+    // Removes sensitive/technical information
+    // Maintains data integrity for business operations
+}
+```
+
 ## 🧪 Testing Strategy
 
 ### Unit Tests (Core)
@@ -164,6 +267,27 @@ func TestTicketRepositoryContract(t *testing.T, repo ports.TicketRepository) {
 }
 ```
 
+### Systematic Update Testing
+```go
+// When interfaces change, verify ALL implementations
+func TestEmailGatewaySystematicUpdate(t *testing.T) {
+    implementations := []ports.EmailGateway{
+        &IMAPAdapter{},
+        &HealthCheckAdapter{},
+        &TestEmailGateway{},
+        // ALL implementations must be tested
+    }
+    
+    for _, impl := range implementations {
+        t.Run(fmt.Sprintf("%T", impl), func(t *testing.T) {
+            // Verify new method exists and doesn't panic
+            _, err := impl.SearchThreadMessages(ctx, criteria)
+            // Basic contract verification
+        })
+    }
+}
+```
+
 ## 🔍 Validation & Compliance
 
 ### Automated Architecture Checks
@@ -175,6 +299,9 @@ The project includes automated scripts to enforce architectural rules:
 
 # Full validation suite
 ./scripts/full_validation.sh
+
+# Verify systematic interface updates
+./scripts/interface_consistency.sh
 ```
 
 **These scripts ensure:**
@@ -182,6 +309,7 @@ The project includes automated scripts to enforce architectural rules:
 - Domain models are pure (no external imports)
 - All ports have implementations
 - Code compiles without errors
+- **All interface implementations are consistent**
 
 ## 📚 Migration & Configuration
 
@@ -234,6 +362,18 @@ func (s *TicketService) Process(ticket *Ticket) error {
 }
 ```
 
+### ❌ Partial Interface Updates
+```go
+// ❌ BAD: Only some implementations updated
+type EmailGateway interface {
+    FetchMessages(ctx context.Context, criteria FetchCriteria) ([]EmailMessage, error)
+    SearchThreadMessages(ctx context.Context, criteria ThreadSearchCriteria) ([]EmailMessage, error) // NEW
+}
+
+// ❌ Some adapters missing new method
+type OldAdapter struct {} // Missing SearchThreadMessages
+```
+
 ## 🚨 Performance & Scalability Considerations
 
 ### Email Module - Large Mailbox Handling
@@ -253,5 +393,13 @@ type IMAPConfig struct {
 }
 ```
 
+### Data Optimization Patterns
+**Headers Optimization (Phase 3B):**
+- 70-80% data reduction in source_meta
+- Automatic sensitive data removal
+- Business data integrity preserved
+- No performance degradation
+
 **Maintainer**: URMS-OS Architecture Committee  
-**Last Updated**: 2025-10-21
+**Last Updated**: 2025-10-22
+**Version Notes**: Added architectural patterns from Phase 3B - EmailHeaders Value Object, HeaderFilter Service, Systematic Interface Updates
