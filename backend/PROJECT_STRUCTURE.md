@@ -17,6 +17,8 @@
 │   │   ├── domain
 │   │   │   ├── email_errors.go
 │   │   │   ├── email.go
+│   │   │   ├── email_headers.go
+│   │   │   ├── email_headers_test.go
 │   │   │   ├── email_test.go
 │   │   │   ├── entities.go
 │   │   │   ├── future_models.go
@@ -59,6 +61,8 @@
 │       │   ├── email_gateway_health_adapter.go
 │       │   ├── email_poller_task.go
 │       │   ├── errors.go
+│       │   ├── header_filter.go
+│       │   ├── header_filter_test.go
 │       │   ├── imap
 │       │   │   ├── client.go
 │       │   │   ├── config.go
@@ -121,4 +125,4 @@
 ├── README.md
 └── README_MIGRATIONS.md
 
-30 directories, 92 files
+30 directories, 96 files

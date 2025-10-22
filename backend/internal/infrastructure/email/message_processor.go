@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
@@ -15,6 +14,7 @@ import (
 type MessageProcessor struct {
 	taskService     ports.TaskService
 	customerService ports.CustomerService
+	headerFilter    *HeaderFilter
 	logger          ports.Logger
 }
 
@@ -27,27 +27,22 @@ func NewMessageProcessor(
 	return &MessageProcessor{
 		taskService:     taskService,
 		customerService: customerService,
+		headerFilter:    NewHeaderFilter(logger),
 		logger:          logger,
 	}
 }
 
 // ProcessIncomingEmail обрабатывает входящие email сообщения с интеграцией Task Management
 func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domain.EmailMessage) error {
-	p.logger.Info(ctx, "Processing incoming email with task integration",
+	p.logger.Info(ctx, "Processing incoming email with HEADERS OPTIMIZATION",
 		"message_id", email.MessageID,
 		"from", email.From,
 		"subject", email.Subject,
-		"body_text_length", len(email.BodyText), // ✅ Логируем длину контента
-		"body_html_length", len(email.BodyHTML),
-		"attachments_count", len(email.Attachments),
-		"operation", "advanced_process_incoming_email")
-
-	// В ProcessIncomingEmail добавляем диагностику
-	p.logger.Debug(ctx, "Email data for processing",
-		"message_id", email.MessageID,
 		"body_text_length", len(email.BodyText),
 		"body_html_length", len(email.BodyHTML),
-		"has_content", email.BodyText != "" || email.BodyHTML != "")
+		"attachments_count", len(email.Attachments),
+		"raw_headers_count", len(email.Headers),
+		"operation", "headers_optimization_process")
 
 	// 1. Валидация email
 	if err := p.validateIncomingEmail(ctx, email); err != nil {
@@ -57,7 +52,17 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		return fmt.Errorf("email validation failed: %w", err)
 	}
 
-	// 2. Поиск или создание клиента
+	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ - НОВАЯ АРХИТЕКТУРА
+	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ - НОВАЯ АРХИТЕКТУРА
+	emailHeaders, err := p.headerFilter.FilterEssentialHeaders(ctx, &email)
+	if err != nil {
+		p.logger.Error(ctx, "Failed to filter essential headers",
+			"message_id", email.MessageID,
+			"error", err.Error())
+		return fmt.Errorf("headers filtering failed: %w", err)
+	}
+
+	// 3. Поиск или создание клиента
 	customer, err := p.findOrCreateCustomer(ctx, email)
 	if err != nil {
 		p.logger.Error(ctx, "Failed to find or create customer",
@@ -67,8 +72,8 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		return fmt.Errorf("customer management failed: %w", err)
 	}
 
-	// 3. Поиск существующей задачи по Thread-ID
-	existingTask, err := p.findExistingTaskByThread(ctx, email)
+	// 4. Поиск существующей задачи по Thread-ID
+	existingTask, err := p.findExistingTaskByThread(ctx, emailHeaders)
 	if err != nil {
 		p.logger.Error(ctx, "Failed to search for existing task",
 			"message_id", email.MessageID,
@@ -78,8 +83,8 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 
 	var task *domain.Task
 	if existingTask != nil {
-		// 4a. Добавление сообщения в существующую задачу
-		task, err = p.addMessageToExistingTask(ctx, existingTask, email, customer.ID)
+		// 5a. Добавление сообщения в существующую задачу
+		task, err = p.addMessageToExistingTask(ctx, existingTask, email, customer.ID, emailHeaders)
 		if err != nil {
 			p.logger.Error(ctx, "Failed to add message to existing task",
 				"task_id", existingTask.ID,
@@ -87,24 +92,24 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 				"error", err.Error())
 			return fmt.Errorf("failed to update existing task: %w", err)
 		}
-		p.logger.Info(ctx, "Message added to existing task",
+		p.logger.Info(ctx, "Message added to existing task with optimized headers",
 			"task_id", existingTask.ID,
 			"message_id", email.MessageID)
 	} else {
-		// 4b. Создание новой задачи
-		task, err = p.createNewTaskFromEmail(ctx, email, customer.ID)
+		// 5b. Создание новой задачи
+		task, err = p.createNewTaskFromEmail(ctx, email, customer.ID, emailHeaders)
 		if err != nil {
 			p.logger.Error(ctx, "Failed to create new task from email",
 				"message_id", email.MessageID,
 				"error", err.Error())
 			return fmt.Errorf("failed to create task: %w", err)
 		}
-		p.logger.Info(ctx, "New task created from email",
+		p.logger.Info(ctx, "New task created from email with optimized headers",
 			"task_id", task.ID,
 			"message_id", email.MessageID)
 	}
 
-	// 5. Автоматическое назначение (базовая логика)
+	// 6. Автоматическое назначение (базовая логика)
 	if task.AssigneeID == "" {
 		task, err = p.autoAssignTask(ctx, task)
 		if err != nil {
@@ -118,11 +123,12 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		}
 	}
 
-	p.logger.Info(ctx, "Incoming email processed successfully with task integration",
+	p.logger.Info(ctx, "Incoming email processed successfully with HEADERS OPTIMIZATION",
 		"message_id", email.MessageID,
 		"task_id", task.ID,
 		"customer_id", customer.ID,
-		"operation", "email_task_integration_complete")
+		"headers_optimized", true,
+		"operation", "headers_optimization_complete")
 
 	return nil
 }
@@ -192,97 +198,86 @@ func (p *MessageProcessor) findOrCreateCustomer(ctx context.Context, email domai
 	return customer, nil
 }
 
-// findExistingTaskByThread ищет существующую задачу по Thread-ID
-// Заменяем временную реализацию findExistingTaskByThread на полнофункциональную
-func (p *MessageProcessor) findExistingTaskByThread(ctx context.Context, email domain.EmailMessage) (*domain.Task, error) {
-	// Создаем критерии поиска по Thread-ID
+// findExistingTaskByThread ищет существующую задачу по Thread-ID с использованием EmailHeaders
+func (p *MessageProcessor) findExistingTaskByThread(ctx context.Context, headers *domain.EmailHeaders) (*domain.Task, error) {
+	if headers == nil {
+		p.logger.Debug(ctx, "No headers provided for thread search")
+		return nil, nil
+	}
+
+	// Создаем критерии поиска по Thread-ID из EmailHeaders
 	searchMeta := make(map[string]interface{})
 
-	if email.MessageID != "" {
-		searchMeta["message_id"] = email.MessageID
+	if headers.MessageID != "" {
+		searchMeta["message_id"] = headers.MessageID
 	}
-	if email.InReplyTo != "" {
-		searchMeta["in_reply_to"] = email.InReplyTo
+	if headers.InReplyTo != "" {
+		searchMeta["in_reply_to"] = headers.InReplyTo
 	}
-	if len(email.References) > 0 {
-		searchMeta["references"] = email.References
-	}
-
-	// ✅ ЛОГИРУЕМ ВСЕ ЗАДАЧИ В СИСТЕМЕ ДЛЯ АНАЛИЗА
-	allTasks, err := p.taskService.SearchTasks(ctx, ports.TaskQuery{Limit: 100})
-	if err == nil {
-		p.logger.Debug(ctx, "Existing tasks in system for thread analysis",
-			"total_tasks", len(allTasks.Tasks),
-			"email_message_id", email.MessageID)
-
-		for i, task := range allTasks.Tasks {
-			p.logger.Debug(ctx, "Task analysis",
-				"index", i,
-				"task_id", task.ID,
-				"task_subject", task.Subject,
-				"task_source_meta", task.SourceMeta)
-		}
+	if len(headers.References) > 0 {
+		searchMeta["references"] = headers.References
 	}
 
-	// ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ
-	p.logger.Debug(ctx, "email threading search criteria",
-		"message_id", email.MessageID,
-		"in_reply_to", email.InReplyTo,
-		"references", email.References,
+	// ✅ ЛОГИРУЕМ КРИТЕРИИ ПОИСКА С НОВОЙ АРХИТЕКТУРОЙ
+	p.logger.Debug(ctx, "Email threading search with OPTIMIZED headers",
+		"message_id", headers.MessageID,
+		"in_reply_to", headers.InReplyTo,
+		"references_count", len(headers.References),
 		"search_meta", searchMeta)
 
 	// Если нет критериев для поиска - создаем новую задачу
 	if len(searchMeta) == 0 {
-		p.logger.Debug(ctx, "no thread criteria found for email",
-			"message_id", email.MessageID)
+		p.logger.Debug(ctx, "No thread criteria found for email",
+			"message_id", headers.MessageID)
 		return nil, nil
 	}
 
 	// Ищем существующие задачи по Thread-ID
 	tasks, err := p.taskService.FindBySourceMeta(ctx, searchMeta)
 	if err != nil {
-		p.logger.Warn(ctx, "failed to search tasks by source meta",
-			"message_id", email.MessageID,
+		p.logger.Warn(ctx, "Failed to search tasks by source meta",
+			"message_id", headers.MessageID,
 			"error", err.Error())
 		return nil, err
 	}
 
-	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТЫ ПОИСКА
-	p.logger.Debug(ctx, "email threading search results",
-		"message_id", email.MessageID,
+	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТЫ ПОИСКА С НОВОЙ АРХИТЕКТУРОЙ
+	p.logger.Debug(ctx, "Email threading search results with OPTIMIZED headers",
+		"message_id", headers.MessageID,
 		"tasks_found", len(tasks),
 		"search_criteria", searchMeta)
 
 	// Возвращаем самую релевантную задачу (первую найденную)
 	if len(tasks) > 0 {
-		p.logger.Info(ctx, "found existing task for email thread",
-			"message_id", email.MessageID,
+		p.logger.Info(ctx, "Found existing task for email thread with OPTIMIZED headers",
+			"message_id", headers.MessageID,
 			"task_id", tasks[0].ID,
 			"matches_count", len(tasks),
 			"search_criteria", searchMeta)
 		return &tasks[0], nil
 	}
 
-	p.logger.Debug(ctx, "no existing task found for email thread",
-		"message_id", email.MessageID,
-		"in_reply_to", email.InReplyTo,
-		"references_count", len(email.References))
+	p.logger.Debug(ctx, "No existing task found for email thread with OPTIMIZED headers",
+		"message_id", headers.MessageID,
+		"in_reply_to", headers.InReplyTo,
+		"references_count", len(headers.References))
 	return nil, nil
 }
 
-// createNewTaskFromEmail создает новую задачу из email
-func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email domain.EmailMessage, customerID string) (*domain.Task, error) {
+// createNewTaskFromEmail создает новую задачу из email с использованием EmailHeaders
+func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email domain.EmailMessage, customerID string, headers *domain.EmailHeaders) (*domain.Task, error) {
 	// Определяем приоритет на основе содержимого
 	priority := p.determinePriority(ctx, email)
 
 	// Определяем категорию
 	category := p.determineCategory(ctx, email)
 
-	sourceMeta := p.buildSourceMeta(email)
+	// ✅ ИСПОЛЬЗУЕМ НОВУЮ АРХИТЕКТУРУ ДЛЯ SOURCE META
+	sourceMeta := p.buildSourceMeta(headers, email)
 
 	req := ports.CreateSupportTaskRequest{
-		Subject:     p.normalizeSubject(email.Subject),
-		Description: p.buildTaskDescription(email),
+		Subject:     p.normalizeSubject(headers.Subject),
+		Description: p.buildTaskDescription(email, headers),
 		CustomerID:  customerID,
 		ReporterID:  "system",
 		Source:      domain.SourceEmail,
@@ -292,12 +287,13 @@ func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email dom
 		Tags:        p.extractTags(ctx, email),
 	}
 
-	// ✅ ЛОГИРУЕМ СОЗДАНИЕ ЗАДАЧИ С SourceMeta
-	p.logger.Info(ctx, "creating new task with source meta",
-		"message_id", email.MessageID,
-		"in_reply_to", email.InReplyTo,
-		"references_count", len(email.References),
-		"source_meta", sourceMeta)
+	// ✅ ЛОГИРУЕМ СОЗДАНИЕ ЗАДАЧИ С OPTIMIZED SOURCE META
+	p.logger.Info(ctx, "Creating new task with OPTIMIZED source meta",
+		"message_id", headers.MessageID,
+		"in_reply_to", headers.InReplyTo,
+		"references_count", len(headers.References),
+		"source_meta_size", fmt.Sprintf("%d keys", len(sourceMeta)),
+		"headers_optimized", true)
 
 	task, err := p.taskService.CreateSupportTask(ctx, req)
 	if err != nil {
@@ -308,7 +304,7 @@ func (p *MessageProcessor) createNewTaskFromEmail(ctx context.Context, email dom
 }
 
 // addMessageToExistingTask добавляет сообщение в существующую задачу
-func (p *MessageProcessor) addMessageToExistingTask(ctx context.Context, task *domain.Task, email domain.EmailMessage, customerID string) (*domain.Task, error) {
+func (p *MessageProcessor) addMessageToExistingTask(ctx context.Context, task *domain.Task, email domain.EmailMessage, customerID string, headers *domain.EmailHeaders) (*domain.Task, error) {
 	messageReq := ports.AddMessageRequest{
 		AuthorID:  customerID,
 		Content:   p.buildMessageContent(email),
@@ -424,14 +420,14 @@ func (p *MessageProcessor) determineCategory(ctx context.Context, email domain.E
 	return "general"
 }
 
-// buildTaskDescription создает описание задачи из email
-func (p *MessageProcessor) buildTaskDescription(email domain.EmailMessage) string {
+// buildTaskDescription создает описание задачи из email с использованием EmailHeaders
+func (p *MessageProcessor) buildTaskDescription(email domain.EmailMessage, headers *domain.EmailHeaders) string {
 	var description strings.Builder
 
 	description.WriteString("Заявка создана автоматически из входящего email.\n\n")
-	description.WriteString("От: " + string(email.From) + "\n")
-	description.WriteString("Тема: " + email.Subject + "\n")
-	description.WriteString("Дата: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
+	description.WriteString("От: " + string(headers.From) + "\n")
+	description.WriteString("Тема: " + headers.Subject + "\n")
+	description.WriteString("Дата: " + headers.Date.Format("2006-01-02 15:04:05") + "\n\n")
 
 	// ✅ ИСПОЛЬЗУЕМ РЕАЛЬНОЕ СОДЕРЖАНИЕ для описания задачи
 	if email.BodyText != "" {
@@ -478,16 +474,12 @@ func (p *MessageProcessor) buildMessageContent(email domain.EmailMessage) string
 	return content.String()
 }
 
-// Исправляем метод buildSourceMeta
-func (p *MessageProcessor) buildSourceMeta(email domain.EmailMessage) map[string]interface{} {
-	meta := map[string]interface{}{
-		"message_id":  email.MessageID,
-		"in_reply_to": email.InReplyTo,
-		// ✅ ИСПРАВЛЯЕМ: References должны быть массивом строк, не разбиваться на символы
-		"references": email.References, // Уже правильный массив из convertToDomainMessage
-		"headers":    email.Headers,
-	}
+// ✅ НОВАЯ АРХИТЕКТУРА: buildSourceMeta с использованием EmailHeaders
+func (p *MessageProcessor) buildSourceMeta(headers *domain.EmailHeaders, email domain.EmailMessage) map[string]interface{} {
+	// Используем EmailHeaders value object для создания source_meta
+	sourceMeta := headers.ToSourceMeta()
 
+	// Добавляем информацию о вложениях
 	if len(email.Attachments) > 0 {
 		attachments := make([]map[string]interface{}, len(email.Attachments))
 		for i, att := range email.Attachments {
@@ -497,21 +489,21 @@ func (p *MessageProcessor) buildSourceMeta(email domain.EmailMessage) map[string
 				"size":         att.Size,
 			}
 		}
-		meta["attachments"] = attachments
+		sourceMeta["attachments"] = attachments
 	}
 
-	// ✅ ДОБАВЛЯЕМ ЛОГИРОВАНИЕ ДЛЯ ПРОВЕРКИ
-	p.logger.Debug(context.Background(), "built source meta",
-		"message_id", email.MessageID,
-		"in_reply_to", email.InReplyTo,
-		"references", email.References,
-		"references_count", len(email.References))
+	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТ ОПТИМИЗАЦИИ
+	p.logger.Debug(context.Background(), "Built OPTIMIZED source meta",
+		"message_id", headers.MessageID,
+		"source_meta_keys", len(sourceMeta),
+		"headers_optimized", true,
+		"threading_data_preserved", headers.HasThreadingData())
 
-	return meta
+	return sourceMeta
 }
 
 func (p *MessageProcessor) extractTags(ctx context.Context, email domain.EmailMessage) []string {
-	tags := []string{"email", "auto-created"}
+	tags := []string{"email", "auto-created", "headers-optimized"} // ✅ Добавляем тег оптимизации
 
 	// Добавляем теги на основе содержимого
 	content := strings.ToLower(email.Subject + " " + email.BodyText)
