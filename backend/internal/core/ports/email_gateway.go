@@ -1,4 +1,3 @@
-// backend/internal/core/ports/email_contract_test.go
 package ports
 
 import (

@@ -69,6 +69,7 @@
 │       │   │   └── utils.go
 │       │   ├── imap_adapter.go
 │       │   ├── imap_poller.go
+│       │   ├── imap_search_test.go
 │       │   ├── integration_test.go
 │       │   ├── message_processor.go
 │       │   ├── message_processor_integration_test.go
@@ -125,4 +126,4 @@
 ├── README.md
 └── README_MIGRATIONS.md
 
-30 directories, 96 files
+30 directories, 97 files
