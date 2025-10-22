@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -31,7 +30,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// backend/cmd/api/main.go
 func main() {
 	// Загружаем конфигурацию
 	cfg, err := config.LoadConfig()
@@ -52,10 +50,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ✅ СОЗДАЕМ И ЗАПУСКАЕМ МЕНЕДЖЕР ФОНОВЫХ ЗАДАЧ ДО HTTP СЕРВЕРА
+	// ✅ ПЕРВОЕ: Запускаем миграции если используется PostgreSQL
+	if cfg.Database.Provider == "postgres" {
+		if err := runMigrations(cfg.Database.Postgres.DSN); err != nil {
+			logger.Error(ctx, "❌ Database migrations failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info(ctx, "✅ Database migrations completed")
+	}
+
+	// ✅ ВТОРОЕ: Запускаем HTTP сервер БЫСТРО
+	server := setupHTTPServer(cfg, dependencies)
+
+	// Запускаем сервер в отдельной goroutine
+	go func() {
+		logger.Info(ctx, "🌐 Starting HTTP server", "port", cfg.Server.Port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error(ctx, "❌ HTTP server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// ✅ КОРОТКАЯ ПАУЗА чтобы HTTP сервер успел запуститься
+	time.Sleep(100 * time.Millisecond)
+
+	// ✅ ТРЕТЬЕ: Запускаем фоновые задачи ПОСЛЕ HTTP сервера
 	backgroundManager := services.NewBackgroundTaskManager(logger)
 
-	// ✅ РЕГИСТРИРУЕМ ФОНОВЫЕ ЗАДАЧИ
+	// Регистрируем фоновые задачи
 	if cfg.Email.IMAP.PollInterval > 0 {
 		emailPollerTask := email.NewEmailPollerTask(
 			dependencies.EmailService,
@@ -66,37 +88,19 @@ func main() {
 		backgroundManager.RegisterTask(emailPollerTask)
 	}
 
-	// ✅ ЗАПУСКАЕМ ВСЕ ФОНОВЫЕ ЗАДАЧИ
+	// Запускаем фоновые задачи
 	if err := backgroundManager.StartAll(ctx); err != nil {
-		logger.Error(ctx, "❌ Failed to start background tasks", "error", err)
-		os.Exit(1)
+		logger.Error(ctx, "❌ CRITICAL: Failed to start background tasks - email processing unavailable",
+			"error", err,
+			"impact", "System cannot process incoming emails - core functionality impaired")
+		os.Exit(1) // 🔴 ЖЕСТКИЙ FAIL - система не может функционировать
 	}
 
-	// ✅ ПРИНУДИТЕЛЬНЫЙ СБРОС БУФЕРА ПОСЛЕ ЗАПУСКА ФОНОВЫХ ЗАДАЧ
-	os.Stdout.Sync()
+	// ✅ УБИРАЕМ os.Stdout.Sync() - он может вызывать проблемы
 
-	// Запускаем миграции если используется PostgreSQL
-	if cfg.Database.Provider == "postgres" {
-		if err := runMigrations(cfg.Database.Postgres.DSN); err != nil {
-			logger.Error(ctx, "❌ Database migrations failed", "error", err)
-			os.Exit(1)
-		}
-		logger.Info(ctx, "✅ Database migrations completed")
-	}
+	logger.Info(ctx, "✅ System startup completed - HTTP server running, background tasks started")
 
-	// Создаем HTTP сервер
-	server := setupHTTPServer(cfg, dependencies)
-
-	// Запускаем сервер
-	go func() {
-		logger.Info(ctx, "🌐 Starting HTTP server", "port", cfg.Server.Port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error(ctx, "❌ HTTP server failed", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	// ✅ ПЕРЕДАЕМ МЕНЕДЖЕР В waitForShutdown для корректного завершения
+	// Ожидаем shutdown
 	waitForShutdown(server, dependencies, backgroundManager)
 }
 
@@ -424,46 +428,6 @@ func setupGinRouter(deps *Dependencies, logger ports.Logger) *gin.Engine {
 	router.GET("/health", healthHandler.HealthCheck)
 	router.GET("/ready", healthHandler.ReadyCheck)
 	router.GET("/live", healthHandler.LiveCheck)
-
-	// Legacy test endpoint - сохраняем для обратной совместимости
-	router.POST("/test-imap", func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-		defer cancel()
-
-		criteria := ports.FetchCriteria{
-			Mailbox:    "INBOX",
-			Limit:      10,
-			UnseenOnly: false,
-			Since:      time.Now().Add(-1 * time.Hour),
-		}
-
-		startTime := time.Now()
-		messages, err := deps.EmailGateway.FetchMessages(ctx, criteria)
-		duration := time.Since(startTime)
-
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				c.JSON(http.StatusRequestTimeout, gin.H{
-					"error":    "IMAP test timeout",
-					"duration": duration.String(),
-				})
-			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error":    "IMAP test failed",
-					"details":  err.Error(),
-					"duration": duration.String(),
-				})
-			}
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"status":           "success",
-			"messages_fetched": len(messages),
-			"duration":         duration.String(),
-			"timeout_config":   "active",
-		})
-	})
 
 	// Root endpoint
 	router.GET("/", func(c *gin.Context) {
