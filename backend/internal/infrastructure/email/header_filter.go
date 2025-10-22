@@ -27,18 +27,12 @@ func (f *HeaderFilter) FilterEssentialHeaders(ctx context.Context, email *domain
 		return nil, fmt.Errorf("email message cannot be nil")
 	}
 
-	f.logger.Debug(ctx, "Filtering essential headers from email message",
+	f.logger.Debug(ctx, "Starting header filtering",
 		"message_id", email.MessageID,
-		"raw_headers_count", len(email.Headers),
-		"essential_keys_count", len(domain.EssentialHeaderKeys))
+		"raw_headers_count", len(email.Headers))
 
-	// Логируем все raw headers для диагностики (в debug режиме)
-	for key, values := range email.Headers {
-		f.logger.Debug(ctx, "Raw header found",
-			"key", key,
-			"values_count", len(values),
-			"first_value_preview", f.getPreview(values[0], 50))
-	}
+	// ✅ УБИРАЕМ цикл логирования каждого заголовка - это основной источник шума
+	// Вместо этого логируем только essential headers summary
 
 	// Создаем EmailHeaders value object из EmailMessage
 	emailHeaders, err := domain.NewEmailHeaders(email)
@@ -49,26 +43,14 @@ func (f *HeaderFilter) FilterEssentialHeaders(ctx context.Context, email *domain
 		return nil, fmt.Errorf("failed to create email headers: %w", err)
 	}
 
-	f.logger.Info(ctx, "Essential headers filtered successfully",
+	// ✅ ОПТИМИЗИРУЕМ финальное логирование - убираем избыточные поля
+	f.logger.Debug(ctx, "Essential headers filtered successfully",
 		"message_id", emailHeaders.MessageID,
-		"subject", emailHeaders.Subject,
-		"from", emailHeaders.From,
+		"subject_preview", f.getPreview(emailHeaders.Subject, 30),
 		"has_threading_data", emailHeaders.HasThreadingData(),
-		"references_count", len(emailHeaders.References),
-		"filtered_headers_count", f.countFilteredHeaders(email.Headers))
+		"references_count", len(emailHeaders.References))
 
 	return emailHeaders, nil
-}
-
-// countFilteredHeaders подсчитывает сколько заголовков было отфильтровано
-func (f *HeaderFilter) countFilteredHeaders(rawHeaders map[string][]string) int {
-	count := 0
-	for key := range rawHeaders {
-		if domain.EssentialHeaderKeys[key] {
-			count++
-		}
-	}
-	return count
 }
 
 // getPreview вспомогательный метод для preview данных

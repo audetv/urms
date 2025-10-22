@@ -47,11 +47,11 @@ func NewMessageProcessor(
 
 // ProcessIncomingEmail обрабатывает входящие email сообщения с интеграцией Task Management
 func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domain.EmailMessage) error {
-	p.logger.Info(ctx, "Processing incoming email with ENHANCED THREAD SEARCH",
+	p.logger.Info(ctx, "Processing incoming email", // ✅ ОДНА строка вместо нескольких
 		"message_id", email.MessageID,
 		"from", email.From,
-		"subject", email.Subject,
-		"operation", "enhanced_thread_search_process")
+		"subject_preview", p.getPreview(email.Subject, 30),
+		"operation", "email_processing")
 
 	// 1. Валидация email
 	if err := p.validateIncomingEmail(ctx, email); err != nil {
@@ -80,10 +80,15 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		return fmt.Errorf("customer management failed: %w", err)
 	}
 
-	// 4. ✅ УЛУЧШЕННЫЙ ПОИСК СУЩЕСТВУЮЩЕЙ ЗАДАЧИ
+	// 4. ✅ ОПТИМИЗИРУЕМ: Группируем логи поиска задачи
+	p.logger.Debug(ctx, "Searching for existing task",
+		"message_id", emailHeaders.MessageID,
+		"has_threading_data", emailHeaders.HasThreadingData(),
+		"references_count", len(emailHeaders.References))
+
 	existingTask, err := p.findExistingTaskByThreadEnhanced(ctx, email, emailHeaders)
 	if err != nil {
-		p.logger.Error(ctx, "Failed to search for existing task with enhanced search",
+		p.logger.Error(ctx, "Failed to search for existing task",
 			"message_id", email.MessageID,
 			"error", err.Error())
 		// Продолжаем обработку, создаем новую задачу
@@ -100,7 +105,7 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 				"error", err.Error())
 			return fmt.Errorf("failed to update existing task: %w", err)
 		}
-		p.logger.Info(ctx, "Message added to existing task found via ENHANCED search",
+		p.logger.Info(ctx, "Message added to existing task", // ✅ КОНСОЛИДИРУЕМ
 			"task_id", existingTask.ID,
 			"message_id", email.MessageID)
 	} else {
@@ -112,76 +117,30 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 				"error", err.Error())
 			return fmt.Errorf("failed to create task: %w", err)
 		}
-		p.logger.Info(ctx, "New task created from email - no existing thread found",
+		p.logger.Info(ctx, "New task created from email", // ✅ КОНСОЛИДИРУЕМ
 			"task_id", task.ID,
 			"message_id", email.MessageID)
 	}
 
-	// 6. Автоматическое назначение
-	if task.AssigneeID == "" {
-		task, err = p.autoAssignTask(ctx, task)
-		if err != nil {
-			p.logger.Warn(ctx, "Auto-assignment failed, task remains unassigned",
-				"task_id", task.ID,
-				"error", err.Error())
-		} else {
-			p.logger.Info(ctx, "Task auto-assigned",
-				"task_id", task.ID,
-				"assignee_id", task.AssigneeID)
-		}
-	}
-
-	p.logger.Info(ctx, "Incoming email processed successfully with ENHANCED THREAD SEARCH",
+	p.logger.Debug(ctx, "Incoming email processing completed", // ✅ ОДНА строка вместо нескольких
 		"message_id", email.MessageID,
 		"task_id", task.ID,
-		"customer_id", customer.ID,
-		"headers_optimized", true,
-		"enhanced_search_used", true,
-		"operation", "enhanced_thread_search_complete")
+		"customer_id", customer.ID)
 
 	return nil
 }
 
-// findExistingTaskByThreadEnhanced - ОБНОВЛЕННАЯ ВЕРСИЯ С КОНФИГУРАЦИЕЙ
+// findExistingTaskByThreadEnhanced - ОПТИМИЗИРУЕМ логирование
 func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context, email domain.EmailMessage, headers *domain.EmailHeaders) (*domain.Task, error) {
 	if headers == nil {
 		p.logger.Debug(ctx, "No headers provided for enhanced thread search")
 		return nil, nil
 	}
 
-	// ✅ СТРАТЕГИЯ 1: Быстрый поиск по существующим threading данным
-	existingTask, err := p.findExistingTaskByThread(ctx, headers)
-	if err != nil {
-		p.logger.Warn(ctx, "Standard thread search failed, trying enhanced search",
-			"message_id", headers.MessageID,
-			"error", err.Error())
-	} else if existingTask != nil {
-		p.logger.Info(ctx, "✅ Found existing task via standard search",
-			"message_id", headers.MessageID,
-			"task_id", existingTask.ID)
-		return existingTask, nil
-	}
-
-	// ✅ СТРАТЕГИЯ 2: Enhanced IMAP search с КОНФИГУРАЦИЕЙ
-	p.logger.Info(ctx, "🚀 Starting ENHANCED IMAP thread search with CONFIGURABLE parameters",
+	// ✅ ОПТИМИЗИРУЕМ: Одна строка вместо нескольких
+	p.logger.Debug(ctx, "Starting enhanced thread search",
 		"message_id", headers.MessageID,
-		"subject", headers.Subject,
-		"in_reply_to", headers.InReplyTo,
 		"references_count", len(headers.References))
-
-	// ✅ ПОЛУЧАЕМ КОНФИГУРАЦИЮ ДЛЯ ЛОГИРОВАНИЯ
-	searchConfig, err := p.searchService.GetThreadSearchConfig(ctx)
-	if err != nil {
-		p.logger.Warn(ctx, "Failed to get search config, using enhanced search without config",
-			"message_id", headers.MessageID,
-			"error", err.Error())
-	} else {
-		p.logger.Info(ctx, "Using CONFIGURABLE search parameters",
-			"default_days", searchConfig.DefaultDaysBack(),
-			"extended_days", searchConfig.ExtendedDaysBack(),
-			"max_days", searchConfig.MaxDaysBack(),
-			"search_strategy", "extended_time_range+combined_criteria")
-	}
 
 	// Создаем критерии для thread-aware поиска
 	threadCriteria := ports.ThreadSearchCriteria{
@@ -201,32 +160,22 @@ func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context,
 		return nil, nil // Продолжаем с созданием новой задачи
 	}
 
-	p.logger.Info(ctx, "Enhanced IMAP thread search completed",
+	// ✅ ОПТИМИЗИРУЕМ: Одна строка результатов
+	p.logger.Debug(ctx, "Enhanced thread search completed",
 		"message_id", headers.MessageID,
-		"found_messages", len(threadMessages),
-		"search_criteria", fmt.Sprintf("%+v", threadCriteria))
+		"found_messages", len(threadMessages))
 
 	// Если нашли сообщения в цепочке, ищем соответствующую задачу
 	if len(threadMessages) > 0 {
 		task := p.findTaskForThreadMessages(ctx, threadMessages)
 		if task != nil {
-			p.logger.Info(ctx, "✅ SUCCESS: Found existing task via ENHANCED IMAP search",
+			p.logger.Info(ctx, "Found existing task via enhanced search", // ✅ КОНСОЛИДИРУЕМ
 				"message_id", headers.MessageID,
 				"task_id", task.ID,
-				"thread_messages_found", len(threadMessages),
-				"search_improvement", "configurable_extended_time_range")
+				"thread_messages_found", len(threadMessages))
 			return task, nil
 		}
-
-		p.logger.Warn(ctx, "Found thread messages but no existing task - creating new task",
-			"message_id", headers.MessageID,
-			"thread_messages_count", len(threadMessages),
-			"first_thread_message_id", safeGetMessageID(threadMessages))
 	}
-
-	p.logger.Info(ctx, "Enhanced thread search completed - creating new task",
-		"message_id", headers.MessageID,
-		"reason", "no_existing_task_found_with_enhanced_search")
 
 	return nil, nil
 }
@@ -684,4 +633,15 @@ func (p *MessageProcessor) NormalizeSubject(subject string) string {
 func (p *MessageProcessor) FindExistingTaskByThreadEnhanced(ctx context.Context, email domain.EmailMessage, headers *domain.EmailHeaders) *domain.Task {
 	task, _ := p.findExistingTaskByThreadEnhanced(ctx, email, headers)
 	return task
+}
+
+// getPreview вспомогательный метод для preview данных
+func (p *MessageProcessor) getPreview(text string, length int) string {
+	if text == "" {
+		return "[empty]"
+	}
+	if len(text) <= length {
+		return text
+	}
+	return text[:length] + "..."
 }

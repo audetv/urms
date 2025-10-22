@@ -898,11 +898,10 @@ func (a *IMAPAdapter) createEnhancedThreadSearchCriteria(threadData ports.Thread
 		criteria.Since = searchConfig.GetSearchSince("extended")
 	}
 
-	a.logger.Info(ctx, "🎯 ENHANCED thread search criteria created",
+	a.logger.Debug(ctx, "Enhanced search criteria created", // ✅ DEBUG уровень
 		"message_ids_count", len(allMessageIDs),
-		"subject", threadData.Subject,
-		"since", criteria.Since.Format("2006-01-02"),
-		"search_strategies", "combined_message_id+subject+extended_time")
+		"subject_preview", a.getPreview(threadData.Subject, 30))
+	// ✅ УБИРАЕМ: since, search_strategies - избыточно для каждого вызова
 
 	return criteria, nil // ✅ ВОЗВРАЩАЕМ error
 }
@@ -1126,18 +1125,11 @@ func (a *IMAPAdapter) convertToDomainMessageWithBody(imapMsg *imap.Message) (dom
 	return domainMsg, nil
 }
 
-// preserveMessageData - исправленная версия с правильным типом
 func (a *IMAPAdapter) preserveMessageData(imapMsg *imap.Message) ([]byte, error) {
-	a.logger.Info(context.Background(), "Starting CRITICAL message data preservation",
+	a.logger.Debug(context.Background(), "Preserving message data", // ✅ DEBUG уровень
 		"available_sections", len(imapMsg.Body))
 
-	// Логируем доступные секции для диагностики
-	for sectionName, literal := range imapMsg.Body {
-		a.logger.Debug(context.Background(), "Available IMAP section",
-			"specifier", sectionName.Specifier, // ✅ sectionName уже указатель
-			"path", sectionName.Path,
-			"has_literal", literal != nil)
-	}
+	// ✅ УБИРАЕМ цикл логирования каждой секции - слишком детально
 
 	// Ищем подходящую секцию для чтения
 	for sectionName, literal := range imapMsg.Body {
@@ -1145,21 +1137,18 @@ func (a *IMAPAdapter) preserveMessageData(imapMsg *imap.Message) ([]byte, error)
 			continue
 		}
 
-		// ✅ ИСПРАВЛЕНО: передаем sectionName как указатель (как он и есть)
 		if a.isReadableSection(sectionName) {
 			data, err := io.ReadAll(literal)
 			if err != nil {
-				a.logger.Warn(context.Background(), "Failed to read section, trying next",
+				a.logger.Debug(context.Background(), "Failed to read section, trying next", // ✅ DEBUG уровень
 					"section", sectionName.Specifier, "error", err.Error())
 				continue
 			}
 
-			a.logger.Info(context.Background(), "✅ CRITICAL SUCCESS: Message data preserved",
+			a.logger.Debug(context.Background(), "Message data preserved", // ✅ DEBUG уровень
 				"section", sectionName.Specifier,
-				"data_length", len(data),
-				"data_preview_first_200", a.getDataPreview(data, 200),
-				"has_headers", bytes.Contains(data, []byte("References:")),
-				"has_content_type", bytes.Contains(data, []byte("Content-Type:")))
+				"data_length", len(data))
+			// ✅ УБИРАЕМ data_preview и детальные проверки - слишком много шума
 
 			return data, nil
 		}
@@ -1236,25 +1225,17 @@ func (a *IMAPAdapter) extractHeadersFromPreservedData(rawData []byte) map[string
 		headers[currentHeader] = append(headers[currentHeader], currentValue.String())
 	}
 
-	// ✅ КРИТИЧЕСКАЯ ПРОВЕРКА REFERENCES - сохраняем диагностику
-	if refs, exists := headers["References"]; exists {
-		a.logger.Debug(context.Background(), "✅ References extracted using proven logic",
-			"raw_references", refs,
-			"references_count", len(refs),
-			"first_reference_length", len(refs[0]),
-			"has_multiline", strings.Contains(refs[0], "\n"))
-
-		// Детальная диагностика References
+	// ✅ ОПТИМИЗИРУЕМ: только ключевая информация о References
+	if refs, exists := headers["References"]; exists && len(refs) > 0 {
 		referencesList := strings.Fields(refs[0])
-		a.logger.Info(context.Background(), "References parsing details",
-			"raw_value", refs[0],
-			"parsed_count", len(referencesList),
-			"parsed_references", referencesList)
+		a.logger.Debug(context.Background(), "References header parsed", // ✅ DEBUG уровень
+			"references_count", len(referencesList))
+		// ✅ УБИРАЕМ raw_value, parsed_references - слишком много шума
 	}
 
-	a.logger.Info(context.Background(), "Headers extraction completed",
-		"total_headers", len(headers),
-		"critical_headers", []string{"References", "In-Reply-To", "Message-ID"})
+	a.logger.Debug(context.Background(), "Headers extraction completed", // ✅ DEBUG уровень
+		"total_headers", len(headers))
+	// ✅ УБИРАЕМ critical_headers - избыточно
 
 	return headers
 }
@@ -1290,37 +1271,26 @@ func (a *IMAPAdapter) parseBodyFromPreservedData(rawData []byte) *MessageBodyInf
 	return result
 }
 
-// extractThreadingData - УСИЛЕННАЯ ЛОГИКА ДЛЯ THREADING
 func (a *IMAPAdapter) extractThreadingData(headers map[string][]string, envelopeInfo *imapclient.EnvelopeInfo) []string {
 	var allReferences []string
 
-	// ✅ ПРИОРИТЕТ: References из заголовков (там полные данные)
+	// ✅ ОПТИМИЗИРУЕМ: только счетчики, без деталей
 	if refs, exists := headers["References"]; exists && len(refs) > 0 {
-		// Используем ПРОВЕРЕННУЮ логику разбивки по пробелам
 		extracted := strings.Fields(refs[0])
 		allReferences = append(allReferences, extracted...)
-
-		a.logger.Debug(context.Background(), "References from headers processed",
-			"raw_header", refs[0],
-			"extracted_count", len(extracted),
-			"extracted_refs", extracted)
+		// ✅ УБИРАЕМ детальное логирование extracted_refs
 	}
 
-	// ✅ ДОПОЛНЕНИЕ: References из envelope (если есть)
 	if envelopeInfo != nil && len(envelopeInfo.References) > 0 {
 		allReferences = append(allReferences, envelopeInfo.References...)
-		a.logger.Debug(context.Background(), "Added envelope references",
-			"envelope_refs_count", len(envelopeInfo.References),
-			"envelope_refs", envelopeInfo.References)
+		// ✅ УБИРАЕМ детальное логирование envelope_refs
 	}
 
-	// Убираем дубликаты и пустые значения
 	allReferences = a.removeDuplicateReferences(allReferences)
 
-	a.logger.Info(context.Background(), "🎯 FINAL THREADING DATA",
-		"total_references", len(allReferences),
-		"references", allReferences,
-		"source", "headers+envelope")
+	a.logger.Debug(context.Background(), "Threading data extracted", // ✅ DEBUG уровень
+		"total_references", len(allReferences))
+	// ✅ УБИРАЕМ список всех references и source - избыточно
 
 	return allReferences
 }
@@ -1382,27 +1352,21 @@ func (a *IMAPAdapter) buildDomainMessage(
 	return domainMsg, nil
 }
 
-// validateMessageConversion - исправленная версия
 func (a *IMAPAdapter) validateMessageConversion(domainMsg domain.EmailMessage, rawData []byte) {
-	a.logger.Info(context.Background(), "🎯 MESSAGE CONVERSION VALIDATION",
+	a.logger.Debug(context.Background(), "Message conversion validated", // ✅ DEBUG уровень
 		"message_id", domainMsg.MessageID,
-		"raw_data_length", len(rawData),
 		"body_text_length", len(domainMsg.BodyText),
-		"body_html_length", len(domainMsg.BodyHTML),
 		"references_count", len(domainMsg.References),
-		"attachments_count", len(domainMsg.Attachments),
-		"has_threading_data", domainMsg.InReplyTo != "" || len(domainMsg.References) > 0)
+		"attachments_count", len(domainMsg.Attachments))
+	// ✅ УБИРАЕМ: raw_data_length, body_html_length, has_threading_data - избыточно
 
-	// Критическая проверка - если нет контента, логируем предупреждение
+	// ✅ ОПТИМИЗИРУЕМ: только критические предупреждения
 	if len(domainMsg.BodyText) == 0 && len(domainMsg.BodyHTML) == 0 {
-		a.logger.Warn(context.Background(), "⚠️ NO MESSAGE CONTENT EXTRACTED",
-			"message_id", domainMsg.MessageID,
-			"raw_data_sample", a.getDataPreview(rawData, 500))
-	} else {
-		a.logger.Info(context.Background(), "✅ SUCCESS: Message content extracted",
-			"text_preview", a.getPreview(domainMsg.BodyText, 100),
-			"html_preview", a.getPreview(domainMsg.BodyHTML, 100))
+		a.logger.Warn(context.Background(), "No message content extracted",
+			"message_id", domainMsg.MessageID)
+		// ✅ УБИРАЕМ raw_data_sample - слишком много шума
 	}
+	// ✅ УБИРАЕМ дополнительное логирование успеха - избыточно
 }
 
 // removeDuplicateReferences - удаляем дубликаты (сохраняем порядок)
@@ -1489,7 +1453,7 @@ func (a *IMAPAdapter) parseMessageBody(imapMsg *imap.Message) (*MessageBodyInfo,
 				"text_length", len(bodyInfo.Text),
 				"html_length", len(bodyInfo.HTML),
 				"attachments_count", len(bodyInfo.Attachments),
-				"text_preview", getPreview(bodyInfo.Text, 100))
+				"text_preview", a.getPreview(bodyInfo.Text, 100))
 
 			return bodyInfo, nil
 		}

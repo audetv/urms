@@ -49,10 +49,7 @@ func NewSearchConfigAdapter(config *EmailSearchConfig, logger ports.Logger) *Sea
 
 // GetThreadSearchConfig возвращает конфигурацию для thread-aware поиска
 func (a *SearchConfigAdapter) GetThreadSearchConfig(ctx context.Context) (*ports.ThreadSearchConfig, error) {
-	a.logger.Debug(ctx, "Getting thread search configuration",
-		"default_days", a.config.ThreadSearch.DefaultDaysBack,
-		"extended_days", a.config.ThreadSearch.ExtendedDaysBack,
-		"max_days", a.config.ThreadSearch.MaxDaysBack)
+	// ✅ УБИРАЕМ детальное логирование получения конфигурации - вызывается слишком часто
 
 	if a.config.ThreadSearch.DefaultDaysBack <= 0 {
 		return nil, fmt.Errorf("invalid thread search configuration: default_days_back must be positive")
@@ -67,19 +64,18 @@ func (a *SearchConfigAdapter) GetThreadSearchConfig(ctx context.Context) (*ports
 		SubjectPrefixes:     a.config.ThreadSearch.SubjectPrefixes,
 	}
 
-	// Если subject prefixes не заданы, используем значения по умолчанию
+	// ✅ ОПТИМИЗИРУЕМ: только факт использования дефолтов, без списка
 	if len(config.SubjectPrefixes) == 0 {
 		config.SubjectPrefixes = []string{"Re:", "RE:", "Fwd:", "FW:", "Ответ:"}
 		a.logger.Debug(ctx, "Using default subject prefixes",
-			"prefixes", config.SubjectPrefixes)
+			"prefixes_count", len(config.SubjectPrefixes)) // ✅ ТОЛЬКО КОЛИЧЕСТВО
 	}
 
-	a.logger.Info(ctx, "Thread search configuration loaded",
+	// ✅ ПЕРЕВОДИМ В DEBUG - конфигурация не меняется часто
+	a.logger.Debug(ctx, "Thread search configuration loaded",
 		"default_days", config.DefaultDaysBack,
-		"extended_days", config.ExtendedDaysBack,
-		"max_days", config.MaxDaysBack,
-		"fetch_timeout", config.FetchTimeout,
-		"include_seen_messages", config.IncludeSeenMessages)
+		"max_days", config.MaxDaysBack)
+	// ✅ УБИРАЕМ: extended_days, fetch_timeout, include_seen_messages - избыточно
 
 	return config, nil
 }
@@ -119,11 +115,9 @@ func (a *SearchConfigAdapter) GetProviderSpecificConfig(ctx context.Context, pro
 			"provider", provider, "timeout", config.SearchTimeout)
 	}
 
-	a.logger.Info(ctx, "Provider-specific configuration loaded",
+	a.logger.Debug(ctx, "Provider-specific configuration loaded",
 		"provider", config.ProviderName,
-		"max_days", config.MaxDaysBack,
-		"search_timeout", config.SearchTimeout,
-		"optimizations_count", len(config.Optimizations))
+		"max_days", config.MaxDaysBack)
 
 	return config, nil
 }

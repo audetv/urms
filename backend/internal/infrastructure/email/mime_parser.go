@@ -42,11 +42,9 @@ func (p *MIMEParser) ParseMessage(rawMessage []byte) (*ParsedMessage, error) {
 		return result, nil
 	}
 
-	// ✅ ДЕТАЛЬНАЯ ДИАГНОСТИКА: Логируем информацию о сырых данных
-	p.logger.Debug(context.Background(), "MIME parser starting",
-		"raw_data_length", len(rawMessage),
-		"raw_preview_first_100", string(rawMessage[:min(100, len(rawMessage))]),
-		"raw_preview_last_100", string(rawMessage[max(0, len(rawMessage)-100):]))
+	// ✅ ОПТИМИЗИРУЕМ: Одна строка вместо трех диагностических
+	p.logger.Debug(context.Background(), "Starting MIME parsing",
+		"raw_data_length", len(rawMessage))
 
 	// Создаем reader для MIME парсера
 	reader := bytes.NewReader(rawMessage)
@@ -55,19 +53,11 @@ func (p *MIMEParser) ParseMessage(rawMessage []byte) (*ParsedMessage, error) {
 	entity, err := message.Read(reader)
 	if err != nil {
 		p.logger.Error(context.Background(), "MIME parsing failed",
-			"error", err.Error(),
-			"raw_data_sample", string(rawMessage[:min(200, len(rawMessage))]))
+			"error", err.Error())
 		return nil, fmt.Errorf("failed to parse MIME message: %w", err)
 	}
 
-	// ✅ ДИАГНОСТИКА СТРУКТУРЫ ENTITY
-	contentType := entity.Header.Get("Content-Type")
-	isMultipart := entity.MultipartReader() != nil
-
-	p.logger.Debug(context.Background(), "MIME entity structure analysis",
-		"content_type", contentType,
-		"is_multipart", isMultipart,
-		"headers_count", countHeaders(entity.Header))
+	// ✅ УБИРАЕМ диагностику структуры entity - это техническая деталь
 
 	// Извлекаем заголовки
 	p.extractHeaders(entity, result)
@@ -76,20 +66,15 @@ func (p *MIMEParser) ParseMessage(rawMessage []byte) (*ParsedMessage, error) {
 	err = p.parseEntity(entity, result)
 	if err != nil {
 		p.logger.Error(context.Background(), "Failed to parse message body",
-			"error", err.Error(),
-			"content_type", contentType)
+			"error", err.Error())
 		return nil, fmt.Errorf("failed to parse message body: %w", err)
 	}
 
-	// ✅ ДЕТАЛЬНАЯ ДИАГНОСТИКА РЕЗУЛЬТАТА
-	p.logger.Debug(context.Background(), "MIME parsing detailed results",
+	// ✅ ОПТИМИЗИРУЕМ финальное логирование - только ключевые метрики
+	p.logger.Debug(context.Background(), "MIME parsing completed",
 		"text_length", len(result.Text),
 		"html_length", len(result.HTML),
-		"attachments_count", len(result.Attachments),
-		"has_text", result.Text != "",
-		"has_html", result.HTML != "",
-		"text_preview", getPreview(result.Text, 50),
-		"html_preview", getPreview(result.HTML, 50))
+		"attachments_count", len(result.Attachments))
 
 	return result, nil
 }
@@ -109,14 +94,8 @@ func (p *MIMEParser) parseEntity(entity *message.Entity, result *ParsedMessage) 
 	contentType := entity.Header.Get("Content-Type")
 	contentDisposition := entity.Header.Get("Content-Disposition")
 
-	// ✅ ДИАГНОСТИКА КАЖДОЙ ЧАСТИ
-	p.logger.Debug(context.Background(), "Processing MIME entity part",
-		"content_type", contentType,
-		"content_disposition", contentDisposition)
-
 	// Проверяем multipart сообщение
 	if mr := entity.MultipartReader(); mr != nil {
-		p.logger.Debug(context.Background(), "Found multipart entity")
 		return p.parseMultipart(mr, result)
 	}
 
@@ -169,12 +148,8 @@ func (p *MIMEParser) parseSinglePart(part *message.Entity, contentType, contentD
 		return fmt.Errorf("failed to read part body: %w", err)
 	}
 
-	// ✅ ДИАГНОСТИКА ДАННЫХ ЧАСТИ
-	p.logger.Debug(context.Background(), "MIME part data analysis",
-		"content_type", contentType,
-		"content_disposition", contentDisposition,
-		"data_length", len(data),
-		"data_preview", string(data[:min(100, len(data))]))
+	// ✅ УБИРАЕМ диагностику данных части - это основной источник шума
+	// Вместо 3+ строк на каждую часть - ничего (или одна строка в summary)
 
 	// Определяем тип контента
 	isAttachment := strings.Contains(strings.ToLower(contentDisposition), "attachment")
@@ -189,6 +164,11 @@ func (p *MIMEParser) parseSinglePart(part *message.Entity, contentType, contentD
 			Data:        data,
 		}
 		result.Attachments = append(result.Attachments, attachment)
+
+		// ✅ Логируем только факт добавления вложения (если нужно)
+		p.logger.Debug(context.Background(), "Attachment added",
+			"name", filename,
+			"size", len(data))
 	} else if strings.Contains(contentType, "text/plain") && result.Text == "" {
 		// Текстовое тело (берем только первое найденное)
 		result.Text = string(data)
@@ -234,38 +214,4 @@ type ParsedMessage struct {
 	HTML        string
 	Attachments []domain.Attachment
 	Headers     map[string][]string
-}
-
-// countHeaders считает количество заголовков в MIME entity
-func countHeaders(header message.Header) int {
-	count := 0
-	fields := header.Fields()
-	for fields.Next() {
-		count++
-	}
-	return count
-}
-
-func getPreview(text string, length int) string {
-	if text == "" {
-		return "[empty]"
-	}
-	if len(text) <= length {
-		return text
-	}
-	return text[:length] + "..."
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
