@@ -45,88 +45,74 @@ func NewMessageProcessor(
 	}
 }
 
-// ProcessIncomingEmail обрабатывает входящие email сообщения с интеграцией Task Management
 func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domain.EmailMessage) error {
-	p.logger.Info(ctx, "Processing incoming email", // ✅ ОДНА строка вместо нескольких
+	// ✅ СОКРАЩАЕМ ЛОГИРОВАНИЕ, НО СОХРАНЯЕМ ВСЮ ЛОГИКУ
+	p.logger.Info(ctx, "Processing incoming email",
 		"message_id", email.MessageID,
 		"from", email.From,
-		"subject_preview", p.getPreview(email.Subject, 30),
-		"operation", "email_processing")
+		"subject_preview", p.getPreview(email.Subject, 30))
 
-	// 1. Валидация email
+	// 1. Валидация email (сохраняем всю логику)
 	if err := p.validateIncomingEmail(ctx, email); err != nil {
-		p.logger.Error(ctx, "Incoming email validation failed",
-			"message_id", email.MessageID,
-			"error", err.Error())
+		p.logger.Error(ctx, "Incoming email validation failed", "message_id", email.MessageID, "error", err.Error())
 		return fmt.Errorf("email validation failed: %w", err)
 	}
 
-	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ
+	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ (сохраняем всю логику)
 	emailHeaders, err := p.headerFilter.FilterEssentialHeaders(ctx, &email)
 	if err != nil {
-		p.logger.Error(ctx, "Failed to filter essential headers",
-			"message_id", email.MessageID,
-			"error", err.Error())
+		p.logger.Error(ctx, "Failed to filter essential headers", "message_id", email.MessageID, "error", err.Error())
 		return fmt.Errorf("headers filtering failed: %w", err)
 	}
 
-	// 3. Поиск или создание клиента
+	// 3. Поиск или создание клиента (сохраняем всю логику)
 	customer, err := p.findOrCreateCustomer(ctx, email)
 	if err != nil {
-		p.logger.Error(ctx, "Failed to find or create customer",
-			"message_id", email.MessageID,
-			"from", email.From,
-			"error", err.Error())
+		p.logger.Error(ctx, "Failed to find or create customer", "message_id", email.MessageID, "error", err.Error())
 		return fmt.Errorf("customer management failed: %w", err)
 	}
 
-	// 4. ✅ ОПТИМИЗИРУЕМ: Группируем логи поиска задачи
+	// 4. Поиск существующей задачи (сохраняем всю логику, оптимизируем логи)
 	p.logger.Debug(ctx, "Searching for existing task",
 		"message_id", emailHeaders.MessageID,
-		"has_threading_data", emailHeaders.HasThreadingData(),
-		"references_count", len(emailHeaders.References))
+		"has_threading_data", emailHeaders.HasThreadingData())
 
 	existingTask, err := p.findExistingTaskByThreadEnhanced(ctx, email, emailHeaders)
 	if err != nil {
-		p.logger.Error(ctx, "Failed to search for existing task",
-			"message_id", email.MessageID,
-			"error", err.Error())
+		p.logger.Error(ctx, "Failed to search for existing task", "message_id", email.MessageID, "error", err.Error())
 		// Продолжаем обработку, создаем новую задачу
 	}
 
 	var task *domain.Task
 	if existingTask != nil {
-		// 5a. Добавление сообщения в существующую задачу
+		// 5a. Добавление сообщения в существующую задачу (сохраняем всю логику)
 		task, err = p.addMessageToExistingTask(ctx, existingTask, email, customer.ID, emailHeaders)
 		if err != nil {
-			p.logger.Error(ctx, "Failed to add message to existing task",
-				"task_id", existingTask.ID,
-				"message_id", email.MessageID,
-				"error", err.Error())
+			p.logger.Error(ctx, "Failed to add message to existing task", "task_id", existingTask.ID, "error", err.Error())
 			return fmt.Errorf("failed to update existing task: %w", err)
 		}
-		p.logger.Info(ctx, "Message added to existing task", // ✅ КОНСОЛИДИРУЕМ
-			"task_id", existingTask.ID,
-			"message_id", email.MessageID)
+		p.logger.Info(ctx, "Message added to existing task", "task_id", existingTask.ID)
 	} else {
-		// 5b. Создание новой задачи
+		// 5b. Создание новой задачи (сохраняем всю логику)
 		task, err = p.createNewTaskFromEmail(ctx, email, customer.ID, emailHeaders)
 		if err != nil {
-			p.logger.Error(ctx, "Failed to create new task from email",
-				"message_id", email.MessageID,
-				"error", err.Error())
+			p.logger.Error(ctx, "Failed to create new task from email", "message_id", email.MessageID, "error", err.Error())
 			return fmt.Errorf("failed to create task: %w", err)
 		}
-		p.logger.Info(ctx, "New task created from email", // ✅ КОНСОЛИДИРУЕМ
-			"task_id", task.ID,
-			"message_id", email.MessageID)
+		p.logger.Info(ctx, "New task created from email", "task_id", task.ID)
 	}
 
-	p.logger.Debug(ctx, "Incoming email processing completed", // ✅ ОДНА строка вместо нескольких
-		"message_id", email.MessageID,
-		"task_id", task.ID,
-		"customer_id", customer.ID)
+	// 6. Автоматическое назначение (сохраняем всю логику, оптимизируем логи)
+	if task.AssigneeID == "" {
+		task, err = p.autoAssignTask(ctx, task)
+		if err != nil {
+			p.logger.Debug(ctx, "Auto-assignment failed", "task_id", task.ID) // ✅ DEBUG вместо Warn
+		} else {
+			p.logger.Debug(ctx, "Task auto-assigned", "task_id", task.ID) // ✅ DEBUG вместо Info
+		}
+	}
 
+	p.logger.Debug(ctx, "Incoming email processing completed", "task_id", task.ID)
 	return nil
 }
 
@@ -137,12 +123,36 @@ func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context,
 		return nil, nil
 	}
 
-	// ✅ ОПТИМИЗИРУЕМ: Одна строка вместо нескольких
-	p.logger.Debug(ctx, "Starting enhanced thread search",
+	// ✅ ВОССТАНАВЛИВАЕМ СТРАТЕГИЮ 1: Быстрый поиск по существующим threading данным (ВСЯ ЛОГИКА)
+	existingTask, err := p.findExistingTaskByThread(ctx, headers)
+	if err != nil {
+		p.logger.Debug(ctx, "Standard thread search failed, trying enhanced search", // ✅ DEBUG вместо Warn
+			"message_id", headers.MessageID,
+			"error", err.Error())
+	} else if existingTask != nil {
+		p.logger.Info(ctx, "Found existing task via standard search", // ✅ Info - это бизнес-событие
+			"message_id", headers.MessageID,
+			"task_id", existingTask.ID)
+		return existingTask, nil
+	}
+
+	// ✅ ВОССТАНАВЛИВАЕМ СТРАТЕГИЮ 2: Enhanced IMAP search (ВСЯ ЛОГИКА)
+	p.logger.Debug(ctx, "Starting enhanced IMAP thread search", // ✅ DEBUG вместо Info
 		"message_id", headers.MessageID,
 		"references_count", len(headers.References))
 
-	// Создаем критерии для thread-aware поиска
+	// ✅ ВОССТАНАВЛИВАЕМ получение конфигурации (ВСЯ ЛОГИКА)
+	searchConfig, err := p.searchService.GetThreadSearchConfig(ctx)
+	if err != nil {
+		p.logger.Debug(ctx, "Failed to get search config, using enhanced search without config", // ✅ DEBUG вместо Warn
+			"message_id", headers.MessageID,
+			"error", err.Error())
+	} else {
+		p.logger.Debug(ctx, "Using configurable search parameters", // ✅ DEBUG вместо Info
+			"max_days", searchConfig.MaxDaysBack()) // ✅ Только ключевой параметр
+	}
+
+	// ✅ ВОССТАНАВЛИВАЕМ создание критериев и поиск (ВСЯ ЛОГИКА)
 	threadCriteria := ports.ThreadSearchCriteria{
 		MessageID:  headers.MessageID,
 		InReplyTo:  headers.InReplyTo,
@@ -151,32 +161,37 @@ func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context,
 		Mailbox:    "INBOX",
 	}
 
-	// Выполняем ENHANCED поиск через EmailGateway
+	// ✅ ВОССТАНАВЛИВАЕМ вызов enhanced поиска (ВСЯ ЛОГИКА)
 	threadMessages, err := p.emailGateway.SearchThreadMessages(ctx, threadCriteria)
 	if err != nil {
-		p.logger.Warn(ctx, "Enhanced IMAP thread search failed",
+		p.logger.Warn(ctx, "Enhanced IMAP thread search failed", // ✅ Warn - это важно
 			"message_id", headers.MessageID,
 			"error", err.Error())
 		return nil, nil // Продолжаем с созданием новой задачи
 	}
 
-	// ✅ ОПТИМИЗИРУЕМ: Одна строка результатов
-	p.logger.Debug(ctx, "Enhanced thread search completed",
+	p.logger.Debug(ctx, "Enhanced IMAP thread search completed",
 		"message_id", headers.MessageID,
 		"found_messages", len(threadMessages))
 
-	// Если нашли сообщения в цепочке, ищем соответствующую задачу
+	// ✅ ВОССТАНАВЛИВАЕМ поиск задачи по найденным письмам (ВСЯ ЛОГИКА)
 	if len(threadMessages) > 0 {
 		task := p.findTaskForThreadMessages(ctx, threadMessages)
 		if task != nil {
-			p.logger.Info(ctx, "Found existing task via enhanced search", // ✅ КОНСОЛИДИРУЕМ
+			p.logger.Info(ctx, "Found existing task via enhanced search", // ✅ Info - бизнес-событие
 				"message_id", headers.MessageID,
 				"task_id", task.ID,
 				"thread_messages_found", len(threadMessages))
 			return task, nil
 		}
+
+		p.logger.Debug(ctx, "Found thread messages but no existing task",
+			"message_id", headers.MessageID,
+			"thread_messages_count", len(threadMessages))
 	}
 
+	p.logger.Debug(ctx, "Enhanced thread search completed - creating new task",
+		"message_id", headers.MessageID)
 	return nil, nil
 }
 
