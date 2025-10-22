@@ -207,17 +207,41 @@ func (g *TestEmailGateway) MarkAsProcessed(ctx context.Context, messageIDs []str
 	return nil
 }
 
+// ✅ ДОБАВЛЯЕМ НОВЫЙ МЕТОД
+func (g *TestEmailGateway) SearchThreadMessages(ctx context.Context, criteria ports.ThreadSearchCriteria) ([]domain.EmailMessage, error) {
+	if !g.Connected {
+		return nil, fmt.Errorf("not connected")
+	}
+	// Возвращаем пустой список для тестирования
+	return []domain.EmailMessage{}, nil
+}
+
 func (g *TestEmailGateway) ListMailboxes(ctx context.Context) ([]ports.MailboxInfo, error) {
+	if !g.Connected {
+		return nil, fmt.Errorf("not connected")
+	}
+	// Возвращаем тестовый почтовый ящик
 	return []ports.MailboxInfo{
-		{Name: "INBOX", Messages: 0, Unseen: 0, Recent: 0},
+		{
+			Name:     "INBOX",
+			Messages: 0,
+			Unseen:   0,
+			Recent:   0,
+		},
 	}, nil
 }
 
 func (g *TestEmailGateway) SelectMailbox(ctx context.Context, name string) error {
+	if !g.Connected {
+		return fmt.Errorf("not connected")
+	}
 	return nil
 }
 
 func (g *TestEmailGateway) GetMailboxInfo(ctx context.Context, name string) (*ports.MailboxInfo, error) {
+	if !g.Connected {
+		return nil, fmt.Errorf("not connected")
+	}
 	return &ports.MailboxInfo{
 		Name:     name,
 		Messages: 0,

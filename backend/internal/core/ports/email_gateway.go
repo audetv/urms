@@ -1,3 +1,4 @@
+// backend/internal/core/ports/email_contract_test.go
 package ports
 
 import (
@@ -19,6 +20,9 @@ type EmailGateway interface {
 	SendMessage(ctx context.Context, msg domain.EmailMessage) error
 	MarkAsRead(ctx context.Context, messageIDs []string) error
 	MarkAsProcessed(ctx context.Context, messageIDs []string) error
+
+	// ✅ НОВЫЙ МЕТОД: Thread-aware поиск сообщений
+	SearchThreadMessages(ctx context.Context, criteria ThreadSearchCriteria) ([]domain.EmailMessage, error)
 
 	// Mailbox Operations
 	ListMailboxes(ctx context.Context) ([]MailboxInfo, error)
@@ -59,6 +63,7 @@ type FetchCriteria struct {
 	Mailbox    string
 	Limit      int
 	UnseenOnly bool
+	Subject    string // ✅ ДОБАВЛЕНО: для subject-based поиска
 }
 
 type MailboxInfo struct {
@@ -66,4 +71,13 @@ type MailboxInfo struct {
 	Messages int
 	Unseen   int
 	Recent   int
+}
+
+// ✅ НОВЫЙ ТИП: ThreadSearchCriteria для thread-aware поиска
+type ThreadSearchCriteria struct {
+	MessageID  string   // Message-ID текущего сообщения
+	InReplyTo  string   // In-Reply-To header
+	References []string // References headers
+	Subject    string   // Нормализованный subject (без Re:/Fwd:)
+	Mailbox    string   // Почтовый ящик для поиска
 }

@@ -15,6 +15,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type mockEmailGateway struct{}
+
+func (m *mockEmailGateway) Connect(ctx context.Context) error     { return nil }
+func (m *mockEmailGateway) Disconnect() error                     { return nil }
+func (m *mockEmailGateway) HealthCheck(ctx context.Context) error { return nil }
+func (m *mockEmailGateway) FetchMessages(ctx context.Context, criteria ports.FetchCriteria) ([]domain.EmailMessage, error) {
+	return nil, nil
+}
+func (m *mockEmailGateway) SendMessage(ctx context.Context, msg domain.EmailMessage) error {
+	return nil
+}
+func (m *mockEmailGateway) MarkAsRead(ctx context.Context, messageIDs []string) error { return nil }
+func (m *mockEmailGateway) MarkAsProcessed(ctx context.Context, messageIDs []string) error {
+	return nil
+}
+func (m *mockEmailGateway) SearchThreadMessages(ctx context.Context, criteria ports.ThreadSearchCriteria) ([]domain.EmailMessage, error) {
+	return []domain.EmailMessage{}, nil
+}
+func (m *mockEmailGateway) ListMailboxes(ctx context.Context) ([]ports.MailboxInfo, error) {
+	return nil, nil
+}
+func (m *mockEmailGateway) SelectMailbox(ctx context.Context, name string) error { return nil }
+func (m *mockEmailGateway) GetMailboxInfo(ctx context.Context, name string) (*ports.MailboxInfo, error) {
+	return nil, nil
+}
+
 // TestMessageProcessor_EmailToTaskIntegration тестирует полный цикл создания задачи из email
 func TestMessageProcessor_EmailToTaskIntegration(t *testing.T) {
 	ctx := context.Background()
@@ -29,7 +55,7 @@ func TestMessageProcessor_EmailToTaskIntegration(t *testing.T) {
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
 
 	// Создаем MessageProcessor с интеграцией
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
+	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
 
 	tests := []struct {
 		name             string
@@ -128,7 +154,7 @@ func TestMessageProcessor_BasicTaskCreation(t *testing.T) {
 
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
+	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
 
 	// Простой email
 	email := domain.EmailMessage{
@@ -176,7 +202,7 @@ func TestMessageProcessor_EmailThreading(t *testing.T) {
 
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
+	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
 
 	// Создаем первоначальную задачу напрямую через сервис для контроля
 	customer, err := customerService.FindOrCreateByEmail(ctx, "threading@example.com", "Threading Customer")
@@ -226,7 +252,7 @@ func TestMessageProcessor_OutgoingEmail(t *testing.T) {
 
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
+	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
 
 	// Создаем задачу для тестирования исходящих сообщений
 	customer, err := customerService.FindOrCreateByEmail(ctx, "test@example.com", "Test Customer")

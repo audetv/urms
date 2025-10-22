@@ -68,6 +68,12 @@ func (m *MockEmailGateway) GetMailboxInfo(ctx context.Context, name string) (*po
 	return args.Get(0).(*ports.MailboxInfo), args.Error(1)
 }
 
+// Добавляем новый метод в mock
+func (m *MockEmailGateway) SearchThreadMessages(ctx context.Context, criteria ports.ThreadSearchCriteria) ([]domain.EmailMessage, error) {
+	args := m.Called(ctx, criteria)
+	return args.Get(0).([]domain.EmailMessage), args.Error(1)
+}
+
 type MockEmailRepository struct {
 	mock.Mock
 }

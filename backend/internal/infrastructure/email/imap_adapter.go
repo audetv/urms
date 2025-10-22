@@ -636,9 +636,9 @@ func (a *IMAPAdapter) GetMailboxInfo(ctx context.Context, name string) (*ports.M
 func (a *IMAPAdapter) convertToIMAPCriteria(ctx context.Context, criteria ports.FetchCriteria) *imap.SearchCriteria {
 	imapCriteria := &imap.SearchCriteria{}
 
-	// ✅ ИСПРАВЛЕНО: Для первого запроса (sinceUID=0) ищем все непрочитанные сообщения
+	// ✅ УЛУЧШЕНИЕ 1: РАСШИРЯЕМ ВРЕМЕННЫЕ РАМКИ ПОИСКА
+	// Для первого запуска ищем за последние 30 дней вместо 7
 	if criteria.SinceUID == 0 {
-		// Ищем непрочитанные сообщения за последние 24 часа
 		if criteria.UnseenOnly {
 			imapCriteria.WithoutFlags = []string{imap.SeenFlag}
 		}
@@ -647,20 +647,167 @@ func (a *IMAPAdapter) convertToIMAPCriteria(ctx context.Context, criteria ports.
 		if !criteria.Since.IsZero() {
 			imapCriteria.Since = criteria.Since
 		} else {
-			// По умолчанию ищем за последние 7 дней
-			imapCriteria.Since = time.Now().Add(-7 * 24 * time.Hour)
+			// ✅ РАСШИРЯЕМ ДО 30 ДНЕЙ ДЛЯ ПОЛНЫХ ЦЕПОЧЕК
+			imapCriteria.Since = time.Now().Add(-30 * 24 * time.Hour)
 		}
 
-		a.logger.Info(ctx, "Using date-based search for initial polling",
+		a.logger.Info(ctx, "Using EXTENDED date-based search for initial polling",
 			"since", imapCriteria.Since,
+			"days_back", 30,
 			"unseen_only", criteria.UnseenOnly)
 	} else {
 		// Для последующих запросов используем UID-based поиск
-		// UID будет установлен в пагинации
-		a.logger.Debug(ctx, "Using UID-based search for pagination", "since_uid", criteria.SinceUID)
+		a.logger.Debug(ctx, "Using UID-based search for pagination",
+			"since_uid", criteria.SinceUID)
+	}
+
+	// ✅ УЛУЧШЕНИЕ 2: ДОБАВЛЯЕМ SEARCH BY SUBJECT ДЛЯ THREADING
+	if criteria.Subject != "" {
+		imapCriteria.Header = map[string][]string{
+			"Subject": {criteria.Subject},
+		}
+		a.logger.Debug(ctx, "Adding subject-based search",
+			"subject", criteria.Subject)
 	}
 
 	return imapCriteria
+}
+
+// ✅ УЛУЧШЕНИЕ 3: ДОБАВЛЯЕМ МЕТОД ДЛЯ THREAD-AWARE ПОИСКА
+// SearchThreadMessages ищет все сообщения в цепочке по threading данным
+func (a *IMAPAdapter) SearchThreadMessages(ctx context.Context, threadData ports.ThreadSearchCriteria) ([]domain.EmailMessage, error) {
+	operation := "IMAP search thread messages"
+
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.FetchTimeout)
+	defer cancel()
+
+	a.logger.Info(ctx, "Starting thread-aware message search",
+		"operation", operation,
+		"message_id", threadData.MessageID,
+		"in_reply_to", threadData.InReplyTo,
+		"references_count", len(threadData.References),
+		"subject", threadData.Subject)
+
+	var messages []domain.EmailMessage
+
+	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
+		// Выбираем почтовый ящик
+		if err := a.SelectMailbox(ctx, threadData.Mailbox); err != nil {
+			return fmt.Errorf("failed to select mailbox: %w", err)
+		}
+
+		// Создаем комбинированные критерии поиска
+		imapCriteria := a.createThreadSearchCriteria(threadData)
+
+		// Ищем сообщения
+		messageUIDs, err := a.client.SearchMessages(imapCriteria)
+		if err != nil {
+			return fmt.Errorf("failed to search thread messages: %w", err)
+		}
+
+		a.logger.Info(ctx, "Thread search completed",
+			"message_id", threadData.MessageID,
+			"found_messages", len(messageUIDs),
+			"search_criteria", a.describeSearchCriteria(imapCriteria))
+
+		if len(messageUIDs) == 0 {
+			messages = []domain.EmailMessage{}
+			return nil
+		}
+
+		// Получаем полные сообщения
+		fetchedMessages, err := a.fetchMessageBatch(ctx, messageUIDs)
+		if err != nil {
+			return fmt.Errorf("failed to fetch thread messages: %w", err)
+		}
+
+		messages = fetchedMessages
+		return nil
+	})
+
+	return messages, err
+}
+
+// createThreadSearchCriteria создает комбинированные критерии для поиска цепочек
+func (a *IMAPAdapter) createThreadSearchCriteria(threadData ports.ThreadSearchCriteria) *imap.SearchCriteria {
+	criteria := &imap.SearchCriteria{}
+
+	// ✅ СТРАТЕГИЯ 1: Поиск по Message-ID цепочки
+	var messageIDs []string
+	if threadData.MessageID != "" {
+		messageIDs = append(messageIDs, threadData.MessageID)
+	}
+	if threadData.InReplyTo != "" {
+		messageIDs = append(messageIDs, threadData.InReplyTo)
+	}
+	if len(threadData.References) > 0 {
+		messageIDs = append(messageIDs, threadData.References...)
+	}
+
+	if len(messageIDs) > 0 {
+		criteria.Header = map[string][]string{
+			"Message-ID": messageIDs,
+		}
+	}
+
+	// ✅ СТРАТЕГИЯ 2: Поиск по Subject (нормализованному)
+	if threadData.Subject != "" {
+		normalizedSubject := a.normalizeThreadSubject(threadData.Subject)
+		if criteria.Header == nil {
+			criteria.Header = make(map[string][]string)
+		}
+		criteria.Header["Subject"] = []string{normalizedSubject}
+	}
+
+	// ✅ СТРАТЕГИЯ 3: Расширенный временной диапазон
+	criteria.Since = time.Now().Add(-90 * 24 * time.Hour) // 90 дней
+
+	// ✅ СТРАТЕГИЯ 4: Включаем прочитанные сообщения для полных цепочек
+	// (не устанавливаем WithoutFlags для Seen)
+
+	a.logger.Debug(context.Background(), "Created thread search criteria",
+		"message_ids_count", len(messageIDs),
+		"subject", threadData.Subject,
+		"since_days", 90)
+
+	return criteria
+}
+
+// normalizeThreadSubject нормализует subject для поиска цепочек
+func (a *IMAPAdapter) normalizeThreadSubject(subject string) string {
+	// Убираем префиксы ответов
+	prefixes := []string{"Re:", "Fwd:", "FW:", "RE:", "Ответ:", "FWD:"}
+	result := subject
+
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(strings.ToUpper(result), strings.ToUpper(prefix)) {
+			result = strings.TrimSpace(result[len(prefix):])
+		}
+	}
+
+	return result
+}
+
+// describeSearchCriteria создает описание критериев для логирования
+func (a *IMAPAdapter) describeSearchCriteria(criteria *imap.SearchCriteria) string {
+	description := []string{}
+
+	if criteria.Since != (time.Time{}) {
+		description = append(description, fmt.Sprintf("since:%s", criteria.Since.Format("2006-01-02")))
+	}
+
+	if criteria.Header != nil {
+		for key, values := range criteria.Header {
+			description = append(description, fmt.Sprintf("%s:%v", key, values))
+		}
+	}
+
+	if len(criteria.WithoutFlags) > 0 {
+		description = append(description, fmt.Sprintf("without_flags:%v", criteria.WithoutFlags))
+	}
+
+	return strings.Join(description, ", ")
 }
 
 // convertToDomainMessage конвертирует IMAP сообщение в доменную сущность

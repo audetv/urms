@@ -255,7 +255,7 @@ func setupEmailServiceWithTaskServices(
 	idGenerator := id.NewUUIDGenerator()
 
 	// ✅ ИСПОЛЬЗУЕМ уже созданные TaskService и CustomerService
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, logger)
+	messageProcessor := email.NewMessageProcessor(taskService, customerService, gateway, logger)
 	logger.Info(context.Background(), "✅ MessageProcessor activated with TaskService integration",
 		"type", "MessageProcessor")
 

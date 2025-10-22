@@ -1,4 +1,4 @@
-// internal/infrastructure/email/advanced_message_processor.go
+// internal/infrastructure/email/message_processor.go
 package email
 
 import (
@@ -14,6 +14,7 @@ import (
 type MessageProcessor struct {
 	taskService     ports.TaskService
 	customerService ports.CustomerService
+	emailGateway    ports.EmailGateway // ✅ ДОБАВЛЯЕМ EmailGateway
 	headerFilter    *HeaderFilter
 	logger          ports.Logger
 }
@@ -22,11 +23,13 @@ type MessageProcessor struct {
 func NewMessageProcessor(
 	taskService ports.TaskService,
 	customerService ports.CustomerService,
+	emailGateway ports.EmailGateway, // ✅ ДОБАВЛЯЕМ EmailGateway
 	logger ports.Logger,
 ) ports.MessageProcessor {
 	return &MessageProcessor{
 		taskService:     taskService,
 		customerService: customerService,
+		emailGateway:    emailGateway, // ✅ ИНИЦИАЛИЗИРУЕМ
 		headerFilter:    NewHeaderFilter(logger),
 		logger:          logger,
 	}
@@ -34,15 +37,11 @@ func NewMessageProcessor(
 
 // ProcessIncomingEmail обрабатывает входящие email сообщения с интеграцией Task Management
 func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domain.EmailMessage) error {
-	p.logger.Info(ctx, "Processing incoming email with HEADERS OPTIMIZATION",
+	p.logger.Info(ctx, "Processing incoming email with ENHANCED THREAD SEARCH",
 		"message_id", email.MessageID,
 		"from", email.From,
 		"subject", email.Subject,
-		"body_text_length", len(email.BodyText),
-		"body_html_length", len(email.BodyHTML),
-		"attachments_count", len(email.Attachments),
-		"raw_headers_count", len(email.Headers),
-		"operation", "headers_optimization_process")
+		"operation", "enhanced_thread_search_process")
 
 	// 1. Валидация email
 	if err := p.validateIncomingEmail(ctx, email); err != nil {
@@ -52,8 +51,7 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		return fmt.Errorf("email validation failed: %w", err)
 	}
 
-	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ - НОВАЯ АРХИТЕКТУРА
-	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ - НОВАЯ АРХИТЕКТУРА
+	// 2. ФИЛЬТРАЦИЯ ЗАГОЛОВКОВ
 	emailHeaders, err := p.headerFilter.FilterEssentialHeaders(ctx, &email)
 	if err != nil {
 		p.logger.Error(ctx, "Failed to filter essential headers",
@@ -72,10 +70,10 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		return fmt.Errorf("customer management failed: %w", err)
 	}
 
-	// 4. Поиск существующей задачи по Thread-ID
-	existingTask, err := p.findExistingTaskByThread(ctx, emailHeaders)
+	// 4. ✅ УЛУЧШЕННЫЙ ПОИСК СУЩЕСТВУЮЩЕЙ ЗАДАЧИ
+	existingTask, err := p.findExistingTaskByThreadEnhanced(ctx, email, emailHeaders)
 	if err != nil {
-		p.logger.Error(ctx, "Failed to search for existing task",
+		p.logger.Error(ctx, "Failed to search for existing task with enhanced search",
 			"message_id", email.MessageID,
 			"error", err.Error())
 		// Продолжаем обработку, создаем новую задачу
@@ -92,7 +90,7 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 				"error", err.Error())
 			return fmt.Errorf("failed to update existing task: %w", err)
 		}
-		p.logger.Info(ctx, "Message added to existing task with optimized headers",
+		p.logger.Info(ctx, "Message added to existing task found via ENHANCED search",
 			"task_id", existingTask.ID,
 			"message_id", email.MessageID)
 	} else {
@@ -104,12 +102,12 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 				"error", err.Error())
 			return fmt.Errorf("failed to create task: %w", err)
 		}
-		p.logger.Info(ctx, "New task created from email with optimized headers",
+		p.logger.Info(ctx, "New task created from email - no existing thread found",
 			"task_id", task.ID,
 			"message_id", email.MessageID)
 	}
 
-	// 6. Автоматическое назначение (базовая логика)
+	// 6. Автоматическое назначение
 	if task.AssigneeID == "" {
 		task, err = p.autoAssignTask(ctx, task)
 		if err != nil {
@@ -123,12 +121,110 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 		}
 	}
 
-	p.logger.Info(ctx, "Incoming email processed successfully with HEADERS OPTIMIZATION",
+	p.logger.Info(ctx, "Incoming email processed successfully with ENHANCED THREAD SEARCH",
 		"message_id", email.MessageID,
 		"task_id", task.ID,
 		"customer_id", customer.ID,
 		"headers_optimized", true,
-		"operation", "headers_optimization_complete")
+		"enhanced_search_used", true,
+		"operation", "enhanced_thread_search_complete")
+
+	return nil
+}
+
+// ✅ НОВЫЙ МЕТОД: findExistingTaskByThreadEnhanced с IMAP search
+func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context, email domain.EmailMessage, headers *domain.EmailHeaders) (*domain.Task, error) {
+	if headers == nil {
+		p.logger.Debug(ctx, "No headers provided for enhanced thread search")
+		return nil, nil
+	}
+
+	// ✅ СТРАТЕГИЯ 1: Стандартный поиск по source_meta (быстрый)
+	existingTask, err := p.findExistingTaskByThread(ctx, headers)
+	if err != nil {
+		p.logger.Warn(ctx, "Standard thread search failed, trying enhanced search",
+			"message_id", headers.MessageID,
+			"error", err.Error())
+	} else if existingTask != nil {
+		p.logger.Info(ctx, "Found existing task via standard search",
+			"message_id", headers.MessageID,
+			"task_id", existingTask.ID)
+		return existingTask, nil
+	}
+
+	// ✅ СТРАТЕГИЯ 2: Enhanced IMAP search для поиска пропущенных сообщений
+	p.logger.Info(ctx, "Starting ENHANCED IMAP thread search for missed messages",
+		"message_id", headers.MessageID,
+		"subject", headers.Subject,
+		"in_reply_to", headers.InReplyTo,
+		"references_count", len(headers.References))
+
+	// Создаем критерии для thread-aware поиска
+	threadCriteria := ports.ThreadSearchCriteria{
+		MessageID:  headers.MessageID,
+		InReplyTo:  headers.InReplyTo,
+		References: headers.References,
+		Subject:    p.normalizeSubject(headers.Subject),
+		Mailbox:    "INBOX", // TODO: Конфигурируемый mailbox
+	}
+
+	// Выполняем enhanced поиск через EmailGateway
+	threadMessages, err := p.emailGateway.SearchThreadMessages(ctx, threadCriteria)
+	if err != nil {
+		p.logger.Warn(ctx, "Enhanced IMAP thread search failed",
+			"message_id", headers.MessageID,
+			"error", err.Error())
+		return nil, nil // Продолжаем с созданием новой задачи
+	}
+
+	p.logger.Info(ctx, "Enhanced IMAP thread search completed",
+		"message_id", headers.MessageID,
+		"found_messages", len(threadMessages),
+		"search_criteria", fmt.Sprintf("%+v", threadCriteria))
+
+	// Если нашли сообщения в цепочке, ищем соответствующую задачу
+	if len(threadMessages) > 0 {
+		task := p.findTaskForThreadMessages(ctx, threadMessages)
+		if task != nil {
+			p.logger.Info(ctx, "Found existing task via ENHANCED IMAP search",
+				"message_id", headers.MessageID,
+				"task_id", task.ID,
+				"thread_messages_found", len(threadMessages))
+			return task, nil
+		}
+	}
+
+	p.logger.Info(ctx, "Enhanced thread search completed - creating new task",
+		"message_id", headers.MessageID,
+		"reason", "no_existing_task_found")
+
+	return nil, nil
+}
+
+// ✅ ВСПОМОГАТЕЛЬНЫЙ МЕТОД: findTaskForThreadMessages
+func (p *MessageProcessor) findTaskForThreadMessages(ctx context.Context, messages []domain.EmailMessage) *domain.Task {
+	// Ищем задачу по Message-ID первого найденного сообщения в цепочке
+	for _, msg := range messages {
+		if msg.MessageID == "" {
+			continue
+		}
+
+		searchMeta := map[string]interface{}{
+			"message_id": msg.MessageID,
+		}
+
+		tasks, err := p.taskService.FindBySourceMeta(ctx, searchMeta)
+		if err != nil {
+			p.logger.Warn(ctx, "Failed to search task for thread message",
+				"message_id", msg.MessageID,
+				"error", err.Error())
+			continue
+		}
+
+		if len(tasks) > 0 {
+			return &tasks[0]
+		}
+	}
 
 	return nil
 }
@@ -517,4 +613,15 @@ func (p *MessageProcessor) extractTags(ctx context.Context, email domain.EmailMe
 	}
 
 	return tags
+}
+
+// NormalizeSubject - публичный метод для тестирования нормализации subject
+func (p *MessageProcessor) NormalizeSubject(subject string) string {
+	return p.normalizeSubject(subject)
+}
+
+// FindExistingTaskByThreadEnhanced - публичный метод для тестирования enhanced search
+func (p *MessageProcessor) FindExistingTaskByThreadEnhanced(ctx context.Context, email domain.EmailMessage, headers *domain.EmailHeaders) *domain.Task {
+	task, _ := p.findExistingTaskByThreadEnhanced(ctx, email, headers)
+	return task
 }
