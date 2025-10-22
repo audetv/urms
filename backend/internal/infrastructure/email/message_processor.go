@@ -8,14 +8,17 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
+	"github.com/audetv/urms/internal/core/services"
 )
 
 // MessageProcessor реализация с интеграцией Task Management
 type MessageProcessor struct {
 	taskService     ports.TaskService
 	customerService ports.CustomerService
-	emailGateway    ports.EmailGateway // ✅ ДОБАВЛЯЕМ EmailGateway
+	emailGateway    ports.EmailGateway
 	headerFilter    *HeaderFilter
+	searchConfig    ports.EmailSearchConfigProvider // ✅ ДОБАВЛЯЕМ конфигурационный порт
+	searchService   *services.EmailSearchService    // ✅ ДОБАВЛЯЕМ сервис поиска
 	logger          ports.Logger
 }
 
@@ -23,14 +26,21 @@ type MessageProcessor struct {
 func NewMessageProcessor(
 	taskService ports.TaskService,
 	customerService ports.CustomerService,
-	emailGateway ports.EmailGateway, // ✅ ДОБАВЛЯЕМ EmailGateway
+	emailGateway ports.EmailGateway,
+	searchConfig ports.EmailSearchConfigProvider, // ✅ ДОБАВЛЯЕМ dependency
 	logger ports.Logger,
 ) ports.MessageProcessor {
+
+	// ✅ СОЗДАЕМ сервис поиска
+	searchService := services.NewEmailSearchService(searchConfig, logger)
+
 	return &MessageProcessor{
 		taskService:     taskService,
 		customerService: customerService,
-		emailGateway:    emailGateway, // ✅ ИНИЦИАЛИЗИРУЕМ
+		emailGateway:    emailGateway,
 		headerFilter:    NewHeaderFilter(logger),
+		searchConfig:    searchConfig,  // ✅ СОХРАНЯЕМ
+		searchService:   searchService, // ✅ СОХРАНЯЕМ
 		logger:          logger,
 	}
 }
@@ -132,32 +142,46 @@ func (p *MessageProcessor) ProcessIncomingEmail(ctx context.Context, email domai
 	return nil
 }
 
-// ✅ НОВЫЙ МЕТОД: findExistingTaskByThreadEnhanced с IMAP search
+// findExistingTaskByThreadEnhanced - ОБНОВЛЕННАЯ ВЕРСИЯ С КОНФИГУРАЦИЕЙ
 func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context, email domain.EmailMessage, headers *domain.EmailHeaders) (*domain.Task, error) {
 	if headers == nil {
 		p.logger.Debug(ctx, "No headers provided for enhanced thread search")
 		return nil, nil
 	}
 
-	// ✅ СТРАТЕГИЯ 1: Стандартный поиск по source_meta (быстрый)
+	// ✅ СТРАТЕГИЯ 1: Быстрый поиск по существующим threading данным
 	existingTask, err := p.findExistingTaskByThread(ctx, headers)
 	if err != nil {
 		p.logger.Warn(ctx, "Standard thread search failed, trying enhanced search",
 			"message_id", headers.MessageID,
 			"error", err.Error())
 	} else if existingTask != nil {
-		p.logger.Info(ctx, "Found existing task via standard search",
+		p.logger.Info(ctx, "✅ Found existing task via standard search",
 			"message_id", headers.MessageID,
 			"task_id", existingTask.ID)
 		return existingTask, nil
 	}
 
-	// ✅ СТРАТЕГИЯ 2: Enhanced IMAP search для поиска пропущенных сообщений
-	p.logger.Info(ctx, "Starting ENHANCED IMAP thread search for missed messages",
+	// ✅ СТРАТЕГИЯ 2: Enhanced IMAP search с КОНФИГУРАЦИЕЙ
+	p.logger.Info(ctx, "🚀 Starting ENHANCED IMAP thread search with CONFIGURABLE parameters",
 		"message_id", headers.MessageID,
 		"subject", headers.Subject,
 		"in_reply_to", headers.InReplyTo,
 		"references_count", len(headers.References))
+
+	// ✅ ПОЛУЧАЕМ КОНФИГУРАЦИЮ ДЛЯ ЛОГИРОВАНИЯ
+	searchConfig, err := p.searchService.GetThreadSearchConfig(ctx)
+	if err != nil {
+		p.logger.Warn(ctx, "Failed to get search config, using enhanced search without config",
+			"message_id", headers.MessageID,
+			"error", err.Error())
+	} else {
+		p.logger.Info(ctx, "Using CONFIGURABLE search parameters",
+			"default_days", searchConfig.DefaultDaysBack(),
+			"extended_days", searchConfig.ExtendedDaysBack(),
+			"max_days", searchConfig.MaxDaysBack(),
+			"search_strategy", "extended_time_range+combined_criteria")
+	}
 
 	// Создаем критерии для thread-aware поиска
 	threadCriteria := ports.ThreadSearchCriteria{
@@ -165,10 +189,10 @@ func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context,
 		InReplyTo:  headers.InReplyTo,
 		References: headers.References,
 		Subject:    p.normalizeSubject(headers.Subject),
-		Mailbox:    "INBOX", // TODO: Конфигурируемый mailbox
+		Mailbox:    "INBOX",
 	}
 
-	// Выполняем enhanced поиск через EmailGateway
+	// Выполняем ENHANCED поиск через EmailGateway
 	threadMessages, err := p.emailGateway.SearchThreadMessages(ctx, threadCriteria)
 	if err != nil {
 		p.logger.Warn(ctx, "Enhanced IMAP thread search failed",
@@ -186,17 +210,23 @@ func (p *MessageProcessor) findExistingTaskByThreadEnhanced(ctx context.Context,
 	if len(threadMessages) > 0 {
 		task := p.findTaskForThreadMessages(ctx, threadMessages)
 		if task != nil {
-			p.logger.Info(ctx, "Found existing task via ENHANCED IMAP search",
+			p.logger.Info(ctx, "✅ SUCCESS: Found existing task via ENHANCED IMAP search",
 				"message_id", headers.MessageID,
 				"task_id", task.ID,
-				"thread_messages_found", len(threadMessages))
+				"thread_messages_found", len(threadMessages),
+				"search_improvement", "configurable_extended_time_range")
 			return task, nil
 		}
+
+		p.logger.Warn(ctx, "Found thread messages but no existing task - creating new task",
+			"message_id", headers.MessageID,
+			"thread_messages_count", len(threadMessages),
+			"first_thread_message_id", safeGetMessageID(threadMessages))
 	}
 
 	p.logger.Info(ctx, "Enhanced thread search completed - creating new task",
 		"message_id", headers.MessageID,
-		"reason", "no_existing_task_found")
+		"reason", "no_existing_task_found_with_enhanced_search")
 
 	return nil, nil
 }
@@ -570,7 +600,7 @@ func (p *MessageProcessor) buildMessageContent(email domain.EmailMessage) string
 	return content.String()
 }
 
-// ✅ НОВАЯ АРХИТЕКТУРА: buildSourceMeta с использованием EmailHeaders
+// buildSourceMeta - ОБНОВЛЕННАЯ ВЕРСИЯ С КОНФИГУРАЦИОННЫМИ ТЕГАМИ
 func (p *MessageProcessor) buildSourceMeta(headers *domain.EmailHeaders, email domain.EmailMessage) map[string]interface{} {
 	// Используем EmailHeaders value object для создания source_meta
 	sourceMeta := headers.ToSourceMeta()
@@ -588,18 +618,43 @@ func (p *MessageProcessor) buildSourceMeta(headers *domain.EmailHeaders, email d
 		sourceMeta["attachments"] = attachments
 	}
 
-	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТ ОПТИМИЗАЦИИ
-	p.logger.Debug(context.Background(), "Built OPTIMIZED source meta",
+	// ✅ ДОБАВЛЯЕМ ИНФОРМАЦИЮ О КОНФИГУРАЦИИ ПОИСКА
+	ctx := context.Background()
+	searchConfig, err := p.searchService.GetThreadSearchConfig(ctx)
+	if err == nil {
+		sourceMeta["search_config"] = map[string]interface{}{
+			"default_days_back":  searchConfig.DefaultDaysBack(),
+			"extended_days_back": searchConfig.ExtendedDaysBack(),
+			"max_days_back":      searchConfig.MaxDaysBack(),
+			"config_version":     "phase3c_enhanced",
+		}
+	}
+
+	// ✅ ЛОГИРУЕМ РЕЗУЛЬТАТ ОПТИМИЗАЦИИ С КОНФИГУРАЦИЕЙ
+	p.logger.Debug(ctx, "Built OPTIMIZED source meta with CONFIGURABLE search",
 		"message_id", headers.MessageID,
 		"source_meta_keys", len(sourceMeta),
 		"headers_optimized", true,
-		"threading_data_preserved", headers.HasThreadingData())
+		"threading_data_preserved", headers.HasThreadingData(),
+		"search_config_included", err == nil)
 
 	return sourceMeta
 }
 
+// extractTags - ОБНОВЛЕННАЯ ВЕРСИЯ С КОНФИГУРАЦИОННЫМИ ТЕГАМИ
 func (p *MessageProcessor) extractTags(ctx context.Context, email domain.EmailMessage) []string {
-	tags := []string{"email", "auto-created", "headers-optimized"} // ✅ Добавляем тег оптимизации
+	tags := []string{
+		"email",
+		"auto-created",
+		"headers-optimized",
+		"phase3c-enhanced", // ✅ ДОБАВЛЯЕМ ТЕГ НОВОЙ ВЕРСИИ
+	}
+
+	// ✅ ДОБАВЛЯЕМ ТЕГ КОНФИГУРАЦИИ ПОИСКА
+	searchConfig, err := p.searchService.GetThreadSearchConfig(ctx)
+	if err == nil {
+		tags = append(tags, fmt.Sprintf("search-%ddays", searchConfig.ExtendedDaysBack()))
+	}
 
 	// Добавляем теги на основе содержимого
 	content := strings.ToLower(email.Subject + " " + email.BodyText)
@@ -611,6 +666,11 @@ func (p *MessageProcessor) extractTags(ctx context.Context, email domain.EmailMe
 	if len(email.Attachments) > 0 {
 		tags = append(tags, "has-attachments")
 	}
+
+	p.logger.Debug(ctx, "Generated tags for email",
+		"message_id", email.MessageID,
+		"tags_count", len(tags),
+		"tags", tags)
 
 	return tags
 }

@@ -110,6 +110,8 @@ type Dependencies struct {
 	// ✅ ДОБАВЛЯЕМ Task Management сервисы
 	TaskService     ports.TaskService
 	CustomerService ports.CustomerService
+	// ✅ ДОБАВЛЯЕМ конфигурационный провайдер
+	SearchConfigProvider ports.EmailSearchConfigProvider
 }
 
 // setupDependencies инициализирует все зависимости приложения
@@ -119,6 +121,9 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 	}
 
 	logger.Info(context.Background(), "🛠️ Initializing dependencies")
+
+	// ✅ ИНИЦИАЛИЗИРУЕМ КОНФИГУРАЦИОННЫЙ ПРОВАЙДЕР ПЕРВЫМ
+	deps.SearchConfigProvider = setupSearchConfig(cfg, logger)
 
 	// Инициализируем базу данных если используется PostgreSQL
 	if cfg.Database.Provider == "postgres" {
@@ -132,7 +137,7 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 	}
 
 	// Инициализируем IMAP адаптер с новой конфигурацией таймаутов
-	deps.EmailGateway = setupIMAPAdapter(cfg, logger)
+	deps.EmailGateway = setupIMAPAdapter(cfg, logger, deps.SearchConfigProvider) // ✅ ПЕРЕДАЕМ конфигурацию
 
 	// Инициализируем email репозиторий
 	emailRepo, err := persistence.NewEmailRepository(
@@ -160,6 +165,7 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 		emailRepo,
 		deps.TaskService,
 		deps.CustomerService,
+		deps.SearchConfigProvider, // ✅ ПЕРЕДАЕМ конфигурацию
 		logger,
 	)
 
@@ -169,6 +175,78 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 	logger.Info(context.Background(), "✅ Dependencies initialized successfully")
 
 	return deps, nil
+}
+
+// setupSearchConfig настраивает конфигурационную систему для email поиска
+func setupSearchConfig(cfg *config.Config, logger ports.Logger) ports.EmailSearchConfigProvider {
+	// ✅ СОЗДАЕМ КОНФИГУРАЦИЮ ДЛЯ EMAIL ПОИСКА
+	searchConfig := &email.EmailSearchConfig{
+		ThreadSearch: email.ThreadSearchConfig{
+			DefaultDaysBack:     180, // 6 месяцев
+			ExtendedDaysBack:    365, // 1 год
+			MaxDaysBack:         730, // 2 года
+			FetchTimeout:        120 * time.Second,
+			IncludeSeenMessages: true,
+			SubjectPrefixes: []string{
+				"Re:", "RE:", "Fwd:", "FW:", "Ответ:", "FWD:",
+			},
+		},
+		ProviderConfig: map[string]email.ProviderSearchConfig{
+			"gmail": {
+				MaxDaysBack:   365,
+				SearchTimeout: 180 * time.Second,
+				SupportedFlags: []string{
+					"X-GM-RAW", "X-GM-THRID",
+				},
+				Optimizations: []string{
+					"gmail_thread_id", "extended_history", "label_support",
+				},
+			},
+			"yandex": {
+				MaxDaysBack:    90,
+				SearchTimeout:  90 * time.Second,
+				SupportedFlags: []string{},
+				Optimizations: []string{
+					"russian_subject_support", "cyrillic_encoding",
+				},
+			},
+			"outlook": {
+				MaxDaysBack:    180,
+				SearchTimeout:  120 * time.Second,
+				SupportedFlags: []string{},
+				Optimizations: []string{
+					"exchange_support", "conversation_id",
+				},
+			},
+			"generic": {
+				MaxDaysBack:    180,
+				SearchTimeout:  120 * time.Second,
+				SupportedFlags: []string{},
+				Optimizations: []string{
+					"standard_search",
+				},
+			},
+		},
+	}
+
+	adapter := email.NewSearchConfigAdapter(searchConfig, logger)
+
+	// ✅ ВАЛИДИРУЕМ КОНФИГУРАЦИЮ
+	ctx := context.Background()
+	if err := adapter.ValidateConfig(ctx); err != nil {
+		logger.Warn(ctx, "Search configuration validation warning",
+			"error", err.Error())
+	} else {
+		logger.Info(ctx, "✅ Email search configuration validated successfully")
+	}
+
+	logger.Info(ctx, "🔧 Email search configuration loaded",
+		"default_days", searchConfig.ThreadSearch.DefaultDaysBack,
+		"extended_days", searchConfig.ThreadSearch.ExtendedDaysBack,
+		"max_days", searchConfig.ThreadSearch.MaxDaysBack,
+		"providers_supported", len(searchConfig.ProviderConfig))
+
+	return adapter
 }
 
 // setupDatabase настраивает соединение с базой данных
@@ -188,7 +266,7 @@ func setupDatabase(cfg config.PostgresConfig) (*sqlx.DB, error) {
 }
 
 // setupIMAPAdapter настраивает IMAP адаптер с поддержкой таймаутов
-func setupIMAPAdapter(cfg *config.Config, logger ports.Logger) ports.EmailGateway { // ✅ ДОБАВЛЯЕМ logger параметр
+func setupIMAPAdapter(cfg *config.Config, logger ports.Logger, searchConfig ports.EmailSearchConfigProvider) ports.EmailGateway {
 	// Создаем конфигурацию IMAP клиента
 	imapConfig := &imapclient.Config{
 		Server:   cfg.Email.IMAP.Server,
@@ -221,7 +299,6 @@ func setupIMAPAdapter(cfg *config.Config, logger ports.Logger) ports.EmailGatewa
 		RetryDelay:       cfg.Email.IMAP.RetryDelay,
 	}
 
-	// ✅ ЗАМЕНЯЕМ старые log.Printf на structured logging
 	logger.Info(context.Background(), "🔧 IMAP Adapter configured with timeouts",
 		"connect_timeout", timeoutConfig.ConnectTimeout,
 		"login_timeout", timeoutConfig.LoginTimeout,
@@ -231,8 +308,8 @@ func setupIMAPAdapter(cfg *config.Config, logger ports.Logger) ports.EmailGatewa
 		"max_messages", timeoutConfig.MaxMessages,
 		"max_retries", timeoutConfig.MaxRetries)
 
-	// ✅ Используем новый конструктор с поддержкой таймаутов
-	return email.NewIMAPAdapterWithTimeouts(imapConfig, timeoutConfig, logger)
+	// ✅ ИСПОЛЬЗУЕМ КОНСТРУКТОР С КОНФИГУРАЦИЕЙ ПОИСКА
+	return email.NewIMAPAdapterWithTimeoutsAndConfig(imapConfig, timeoutConfig, searchConfig, logger)
 }
 
 // setupEmailServiceWithTaskServices настраивает email сервис с уже созданными Task сервисами
@@ -241,6 +318,7 @@ func setupEmailServiceWithTaskServices(
 	repo ports.EmailRepository,
 	taskService ports.TaskService,
 	customerService ports.CustomerService,
+	searchConfig ports.EmailSearchConfigProvider, // ✅ ДОБАВЛЯЕМ параметр
 	logger ports.Logger,
 ) *services.EmailService {
 	// Создаем политику обработки email
@@ -254,10 +332,18 @@ func setupEmailServiceWithTaskServices(
 	// Используем существующую реализацию из infrastructure
 	idGenerator := id.NewUUIDGenerator()
 
-	// ✅ ИСПОЛЬЗУЕМ уже созданные TaskService и CustomerService
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, gateway, logger)
-	logger.Info(context.Background(), "✅ MessageProcessor activated with TaskService integration",
-		"type", "MessageProcessor")
+	// ✅ ИСПОЛЬЗУЕМ уже созданные TaskService и CustomerService + SearchConfig
+	messageProcessor := email.NewMessageProcessor(
+		taskService,
+		customerService,
+		gateway,
+		searchConfig, // ✅ ПЕРЕДАЕМ конфигурацию
+		logger,
+	)
+
+	logger.Info(context.Background(), "✅ MessageProcessor activated with enhanced search configuration",
+		"type", "MessageProcessor",
+		"search_config", "enabled")
 
 	return services.NewEmailService(
 		gateway,

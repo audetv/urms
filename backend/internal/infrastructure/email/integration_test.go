@@ -139,7 +139,7 @@ func TestEmailGatewayContractWithIMAPAndTimeouts(t *testing.T) {
 
 	setupGateway := func() ports.EmailGateway {
 		// ✅ ИСПРАВЛЕНО: Используем новый конструктор с таймаутами
-		return NewIMAPAdapter(imapConfig, timeoutConfig, logger)
+		return NewIMAPAdapter(imapConfig, timeoutConfig, nil, logger)
 	}
 
 	// Запускаем контрактные тесты

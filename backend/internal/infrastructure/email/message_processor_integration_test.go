@@ -15,6 +15,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// MockEmailSearchConfigProvider для тестирования
+type MockEmailSearchConfigProvider struct{}
+
+func (m *MockEmailSearchConfigProvider) GetThreadSearchConfig(ctx context.Context) (*ports.ThreadSearchConfig, error) {
+	return &ports.ThreadSearchConfig{
+		DefaultDaysBack:     180,
+		ExtendedDaysBack:    365,
+		MaxDaysBack:         730,
+		FetchTimeout:        120 * time.Second,
+		IncludeSeenMessages: true,
+		SubjectPrefixes:     []string{"Re:", "Fwd:", "Ответ:"},
+	}, nil
+}
+
+func (m *MockEmailSearchConfigProvider) GetProviderSpecificConfig(ctx context.Context, provider string) (*ports.ProviderSearchConfig, error) {
+	return &ports.ProviderSearchConfig{
+		ProviderName:  provider,
+		MaxDaysBack:   365,
+		SearchTimeout: 120 * time.Second,
+		Optimizations: []string{"standard_search"},
+	}, nil
+}
+
+func (m *MockEmailSearchConfigProvider) ValidateConfig(ctx context.Context) error {
+	return nil
+}
+
 type mockEmailGateway struct{}
 
 func (m *mockEmailGateway) Connect(ctx context.Context) error     { return nil }
@@ -54,8 +81,19 @@ func TestMessageProcessor_EmailToTaskIntegration(t *testing.T) {
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
 
-	// Создаем MessageProcessor с интеграцией
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
+	// ✅ ДОБАВЛЯЕМ конфигурационный провайдер
+	searchConfig := &MockEmailSearchConfigProvider{}
+
+	// ✅ ОБНОВЛЯЕМ вызов конструктора с новым параметром
+	messageProcessor := email.NewMessageProcessor(
+		taskService,
+		customerService,
+		&mockEmailGateway{},
+		searchConfig, // ✅ ДОБАВЛЯЕМ этот параметр
+		logger,
+	)
+
+	require.NotNil(t, messageProcessor)
 
 	tests := []struct {
 		name             string
@@ -154,7 +192,19 @@ func TestMessageProcessor_BasicTaskCreation(t *testing.T) {
 
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
+	// ✅ ДОБАВЛЯЕМ конфигурационный провайдер
+	searchConfig := &MockEmailSearchConfigProvider{}
+
+	// ✅ ОБНОВЛЯЕМ вызов конструктора
+	messageProcessor := email.NewMessageProcessor(
+		taskService,
+		customerService,
+		&mockEmailGateway{},
+		searchConfig, // ✅ ДОБАВЛЯЕМ этот параметр
+		logger,
+	)
+
+	require.NotNil(t, messageProcessor)
 
 	// Простой email
 	email := domain.EmailMessage{
@@ -202,7 +252,19 @@ func TestMessageProcessor_EmailThreading(t *testing.T) {
 
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
+	// ✅ ДОБАВЛЯЕМ конфигурационный провайдер
+	searchConfig := &MockEmailSearchConfigProvider{}
+
+	// ✅ ОБНОВЛЯЕМ вызов конструктора
+	messageProcessor := email.NewMessageProcessor(
+		taskService,
+		customerService,
+		&mockEmailGateway{},
+		searchConfig, // ✅ ДОБАВЛЯЕМ этот параметр
+		logger,
+	)
+
+	require.NotNil(t, messageProcessor)
 
 	// Создаем первоначальную задачу напрямую через сервис для контроля
 	customer, err := customerService.FindOrCreateByEmail(ctx, "threading@example.com", "Threading Customer")
@@ -252,7 +314,19 @@ func TestMessageProcessor_OutgoingEmail(t *testing.T) {
 
 	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, logger)
 	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
-	messageProcessor := email.NewMessageProcessor(taskService, customerService, &mockEmailGateway{}, logger)
+	// ✅ ДОБАВЛЯЕМ конфигурационный провайдер
+	searchConfig := &MockEmailSearchConfigProvider{}
+
+	// ✅ ОБНОВЛЯЕМ вызов конструктора
+	messageProcessor := email.NewMessageProcessor(
+		taskService,
+		customerService,
+		&mockEmailGateway{},
+		searchConfig, // ✅ ДОБАВЛЯЕМ этот параметр
+		logger,
+	)
+
+	require.NotNil(t, messageProcessor)
 
 	// Создаем задачу для тестирования исходящих сообщений
 	customer, err := customerService.FindOrCreateByEmail(ctx, "test@example.com", "Test Customer")
@@ -288,6 +362,42 @@ func TestMessageProcessor_OutgoingEmail(t *testing.T) {
 
 	// Должно быть хотя бы одно сообщение (системное о отправке email)
 	assert.True(t, len(updatedTask.Messages) >= 1)
+}
+
+// ✅ ДОБАВЛЯЕМ НОВЫЙ ТЕСТ ДЛЯ ПРОВЕРКИ КОНФИГУРАЦИИ
+func TestMessageProcessor_WithEnhancedSearchConfiguration(t *testing.T) {
+	ctx := context.Background()
+	logger := &TestLogger{}
+
+	taskRepo := inmemory.NewTaskRepository(logger)
+	customerRepo := inmemory.NewCustomerRepository(logger)
+	userRepo := inmemory.NewUserRepository(logger)
+
+	taskService := services.NewTaskService(taskRepo, customerRepo, userRepo, &TestLogger{})
+	customerService := services.NewCustomerService(customerRepo, taskRepo, logger)
+
+	// ✅ ИСПОЛЬЗУЕМ конфигурационный провайдер
+	searchConfig := &MockEmailSearchConfigProvider{}
+
+	messageProcessor := email.NewMessageProcessor(
+		taskService,
+		customerService,
+		&mockEmailGateway{},
+		searchConfig, // ✅ ПЕРЕДАЕМ КОНФИГУРАЦИЮ
+		logger,
+	)
+
+	require.NotNil(t, messageProcessor)
+
+	// Проверяем что processor создан с конфигурацией
+	assert.NotNil(t, messageProcessor)
+
+	// Можно добавить дополнительные проверки конфигурации
+	config, err := searchConfig.GetThreadSearchConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 180, config.DefaultDaysBack)
+	assert.Equal(t, 365, config.ExtendedDaysBack)
+	assert.True(t, config.IncludeSeenMessages)
 }
 
 // TestLogger для тестирования

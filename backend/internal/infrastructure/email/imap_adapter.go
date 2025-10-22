@@ -12,6 +12,7 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
+	"github.com/audetv/urms/internal/core/services"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
 	"github.com/audetv/urms/internal/infrastructure/logging"
 	"github.com/emersion/go-imap"
@@ -28,11 +29,13 @@ type MessageBodyInfo struct {
 type IMAPAdapter struct {
 	client            *imapclient.Client
 	config            *imapclient.Config
+	searchConfig      ports.EmailSearchConfigProvider // ✅ Уже добавлено ранее
+	searchService     *services.EmailSearchService    // ✅ ДОБАВЛЯЕМ сервис
 	mimeParser        *MIMEParser
 	addressNormalizer *AddressNormalizer
 	retryManager      *RetryManager
 	timeoutConfig     TimeoutConfig
-	logger            ports.Logger // ✅ ДОБАВЛЯЕМ ports.Logger
+	logger            ports.Logger
 }
 
 // TimeoutConfig конфигурация таймаутов для IMAP операций
@@ -48,8 +51,12 @@ type TimeoutConfig struct {
 }
 
 // NewIMAPAdapter создает новый IMAP адаптер с поддержкой таймаутов
-func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig, logger ports.Logger) *IMAPAdapter {
-	// Настраиваем retry manager с конфигурацией из timeoutConfig
+func NewIMAPAdapter(
+	config *imapclient.Config,
+	timeoutConfig TimeoutConfig,
+	searchConfig ports.EmailSearchConfigProvider, // ✅ Конфигурационный порт
+	logger ports.Logger,
+) *IMAPAdapter {
 	retryConfig := RetryConfig{
 		MaxAttempts:   timeoutConfig.MaxRetries,
 		BaseDelay:     timeoutConfig.RetryDelay,
@@ -57,14 +64,49 @@ func NewIMAPAdapter(config *imapclient.Config, timeoutConfig TimeoutConfig, logg
 		BackoffFactor: 1.5,
 	}
 
+	// ✅ СОЗДАЕМ сервис поиска
+	searchService := services.NewEmailSearchService(searchConfig, logger)
+
 	return &IMAPAdapter{
 		client:            imapclient.NewClient(config),
 		config:            config,
+		searchConfig:      searchConfig,
+		searchService:     searchService, // ✅ ИНИЦИАЛИЗИРУЕМ сервис
 		mimeParser:        NewMIMEParser(logger),
 		addressNormalizer: NewAddressNormalizer(),
 		retryManager:      NewRetryManager(retryConfig, logger),
 		timeoutConfig:     timeoutConfig,
-		logger:            logger, // ✅ ДОБАВЛЯЕМ logger
+		logger:            logger,
+	}
+}
+
+// NewIMAPAdapterWithTimeoutsAndConfig создает IMAP адаптер с поддержкой таймаутов и конфигурации поиска
+func NewIMAPAdapterWithTimeoutsAndConfig(
+	config *imapclient.Config,
+	timeoutConfig TimeoutConfig,
+	searchConfig ports.EmailSearchConfigProvider, // ✅ ДОБАВЛЯЕМ конфигурацию
+	logger ports.Logger,
+) *IMAPAdapter {
+	retryConfig := RetryConfig{
+		MaxAttempts:   timeoutConfig.MaxRetries,
+		BaseDelay:     timeoutConfig.RetryDelay,
+		MaxDelay:      30 * time.Second,
+		BackoffFactor: 1.5,
+	}
+
+	// ✅ СОЗДАЕМ сервис поиска
+	searchService := services.NewEmailSearchService(searchConfig, logger)
+
+	return &IMAPAdapter{
+		client:            imapclient.NewClient(config),
+		config:            config,
+		searchConfig:      searchConfig,  // ✅ СОХРАНЯЕМ конфигурацию
+		searchService:     searchService, // ✅ СОХРАНЯЕМ сервис
+		mimeParser:        NewMIMEParser(logger),
+		addressNormalizer: NewAddressNormalizer(),
+		retryManager:      NewRetryManager(retryConfig, logger),
+		timeoutConfig:     timeoutConfig,
+		logger:            logger,
 	}
 }
 
@@ -106,7 +148,7 @@ func NewIMAPAdapterLegacy(config *imapclient.Config) *IMAPAdapter {
 	// ✅ СОЗДАЕМ тестовый logger для обратной совместимости
 	testLogger := logging.NewTestLogger()
 
-	return NewIMAPAdapter(config, defaultTimeoutConfig, testLogger)
+	return NewIMAPAdapter(config, defaultTimeoutConfig, nil, testLogger)
 }
 
 // Connect устанавливает соединение с IMAP сервером с таймаутом
@@ -208,7 +250,10 @@ func (a *IMAPAdapter) fetchMessagesWithPagination(ctx context.Context, criteria 
 	}
 
 	// Конвертируем доменные критерии в IMAP-специфичные
-	imapCriteria := a.convertToIMAPCriteria(ctx, criteria)
+	imapCriteria, err := a.convertToIMAPCriteria(ctx, criteria)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert criteria: %w", err)
+	}
 
 	// Ищем сообщения по UID с поддержкой пагинации
 	allMessages := []domain.EmailMessage{}
@@ -484,7 +529,11 @@ func (a *IMAPAdapter) FetchMessagesWithBody(ctx context.Context, criteria ports.
 		return nil, fmt.Errorf("failed to select mailbox %s: %w", criteria.Mailbox, err)
 	}
 
-	imapCriteria := a.convertToIMAPCriteria(ctx, criteria)
+	imapCriteria, err := a.convertToIMAPCriteria(ctx, criteria)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert criteria: %w", err)
+	}
+
 	messageUIDs, err := a.client.SearchMessages(imapCriteria)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search messages: %w", err)
@@ -633,100 +682,250 @@ func (a *IMAPAdapter) GetMailboxInfo(ctx context.Context, name string) (*ports.M
 }
 
 // convertToIMAPCriteria конвертирует доменные критерии в IMAP-специфичные
-func (a *IMAPAdapter) convertToIMAPCriteria(ctx context.Context, criteria ports.FetchCriteria) *imap.SearchCriteria {
+// convertToIMAPCriteria - ОБНОВЛЯЕМ для возврата error
+func (a *IMAPAdapter) convertToIMAPCriteria(ctx context.Context, criteria ports.FetchCriteria) (*imap.SearchCriteria, error) {
 	imapCriteria := &imap.SearchCriteria{}
 
-	// ✅ УЛУЧШЕНИЕ 1: РАСШИРЯЕМ ВРЕМЕННЫЕ РАМКИ ПОИСКА
-	// Для первого запуска ищем за последние 30 дней вместо 7
-	if criteria.SinceUID == 0 {
-		if criteria.UnseenOnly {
-			imapCriteria.WithoutFlags = []string{imap.SeenFlag}
-		}
+	// ✅ ПОЛУЧАЕМ КОНФИГУРАЦИЮ ЧЕРЕЗ СЕРВИС
+	searchConfig, err := a.searchService.GetThreadSearchConfig(ctx)
+	if err != nil {
+		a.logger.Error(ctx, "Failed to get search configuration for criteria",
+			"error", err.Error())
+		return nil, fmt.Errorf("failed to get search configuration: %w", err)
+	}
 
-		// Ограничиваем поиск по дате если указано
-		if !criteria.Since.IsZero() {
-			imapCriteria.Since = criteria.Since
-		} else {
-			// ✅ РАСШИРЯЕМ ДО 30 ДНЕЙ ДЛЯ ПОЛНЫХ ЦЕПОЧЕК
-			imapCriteria.Since = time.Now().Add(-30 * 24 * time.Hour)
-		}
-
-		a.logger.Info(ctx, "Using EXTENDED date-based search for initial polling",
-			"since", imapCriteria.Since,
-			"days_back", 30,
-			"unseen_only", criteria.UnseenOnly)
+	// ✅ ИСПОЛЬЗУЕМ КОНФИГУРИРУЕМЫЕ ЗНАЧЕНИЯ
+	if !criteria.Since.IsZero() {
+		imapCriteria.Since = criteria.Since
 	} else {
-		// Для последующих запросов используем UID-based поиск
-		a.logger.Debug(ctx, "Using UID-based search for pagination",
-			"since_uid", criteria.SinceUID)
+		imapCriteria.Since = searchConfig.GetSearchSince("standard")
 	}
 
-	// ✅ УЛУЧШЕНИЕ 2: ДОБАВЛЯЕМ SEARCH BY SUBJECT ДЛЯ THREADING
 	if criteria.Subject != "" {
-		imapCriteria.Header = map[string][]string{
-			"Subject": {criteria.Subject},
+		if imapCriteria.Header == nil {
+			imapCriteria.Header = make(map[string][]string)
 		}
-		a.logger.Debug(ctx, "Adding subject-based search",
-			"subject", criteria.Subject)
+		imapCriteria.Header["Subject"] = []string{criteria.Subject}
+
+		a.logger.Debug(ctx, "Added subject-based search to criteria",
+			"subject", criteria.Subject,
+			"since", imapCriteria.Since.Format("2006-01-02"))
 	}
 
-	return imapCriteria
+	if criteria.SinceUID == 0 && criteria.UnseenOnly {
+		imapCriteria.WithoutFlags = []string{imap.SeenFlag}
+	}
+
+	a.logger.Info(ctx, "Using CONFIGURABLE search criteria",
+		"since", imapCriteria.Since.Format("2006-01-02"),
+		"days_back", searchConfig.DefaultDaysBack(),
+		"has_subject", criteria.Subject != "",
+		"unseen_only", criteria.UnseenOnly,
+		"config_source", "EmailSearchConfig")
+
+	return imapCriteria, nil // ✅ ВОЗВРАЩАЕМ error
 }
 
-// ✅ УЛУЧШЕНИЕ 3: ДОБАВЛЯЕМ МЕТОД ДЛЯ THREAD-AWARE ПОИСКА
 // SearchThreadMessages ищет все сообщения в цепочке по threading данным
+// SearchThreadMessages - ОБНОВЛЯЕМ для использования createEnhancedThreadSearchCriteria
 func (a *IMAPAdapter) SearchThreadMessages(ctx context.Context, threadData ports.ThreadSearchCriteria) ([]domain.EmailMessage, error) {
-	operation := "IMAP search thread messages"
+	operation := "IMAP enhanced thread search"
 
-	// Создаем контекст с таймаутом
-	ctx, cancel := context.WithTimeout(ctx, a.timeoutConfig.FetchTimeout)
+	providerConfig, err := a.searchService.GetProviderSearchConfig(ctx, "imap")
+	if err != nil {
+		a.logger.Warn(ctx, "Failed to get provider config, using default timeout",
+			"provider", "imap", "error", err.Error())
+		providerConfig = &ports.ProviderSearchConfig{
+			SearchTimeout: a.timeoutConfig.FetchTimeout,
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, providerConfig.SearchTimeout*2)
 	defer cancel()
 
-	a.logger.Info(ctx, "Starting thread-aware message search",
+	a.logger.Info(ctx, "🚀 Starting ENHANCED thread-aware message search",
 		"operation", operation,
 		"message_id", threadData.MessageID,
 		"in_reply_to", threadData.InReplyTo,
 		"references_count", len(threadData.References),
-		"subject", threadData.Subject)
+		"subject", threadData.Subject,
+		"mailbox", threadData.Mailbox,
+		"timeout", providerConfig.SearchTimeout*2)
 
 	var messages []domain.EmailMessage
 
-	err := a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
-		// Выбираем почтовый ящик
+	err = a.retryManager.ExecuteWithRetry(ctx, operation, func() error {
 		if err := a.SelectMailbox(ctx, threadData.Mailbox); err != nil {
 			return fmt.Errorf("failed to select mailbox: %w", err)
 		}
 
-		// Создаем комбинированные критерии поиска
-		imapCriteria := a.createThreadSearchCriteria(threadData)
+		// ✅ ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД createEnhancedThreadSearchCriteria
+		imapCriteria, err := a.createEnhancedThreadSearchCriteria(threadData)
+		if err != nil {
+			return fmt.Errorf("failed to create enhanced search criteria: %w", err)
+		}
 
-		// Ищем сообщения
 		messageUIDs, err := a.client.SearchMessages(imapCriteria)
 		if err != nil {
 			return fmt.Errorf("failed to search thread messages: %w", err)
 		}
 
-		a.logger.Info(ctx, "Thread search completed",
+		a.logger.Info(ctx, "Enhanced thread search completed",
 			"message_id", threadData.MessageID,
 			"found_messages", len(messageUIDs),
-			"search_criteria", a.describeSearchCriteria(imapCriteria))
+			"search_criteria", a.describeEnhancedSearchCriteria(imapCriteria))
 
 		if len(messageUIDs) == 0 {
 			messages = []domain.EmailMessage{}
+
+			a.logger.Warn(ctx, "No messages found with enhanced search criteria",
+				"original_message_id", threadData.MessageID,
+				"criteria_used", a.describeEnhancedSearchCriteria(imapCriteria))
 			return nil
 		}
 
-		// Получаем полные сообщения
 		fetchedMessages, err := a.fetchMessageBatch(ctx, messageUIDs)
 		if err != nil {
 			return fmt.Errorf("failed to fetch thread messages: %w", err)
 		}
 
 		messages = fetchedMessages
+
+		a.logger.Info(ctx, "✅ ENHANCED thread search SUCCESS",
+			"original_message_id", threadData.MessageID,
+			"found_thread_messages", len(messages),
+			"first_found_message_id", safeGetMessageID(messages),
+			"search_strategy", "extended_time+combined_criteria+configurable")
+
 		return nil
 	})
 
 	return messages, err
+}
+
+// Вспомогательная функция для безопасного получения Message-ID
+func safeGetMessageID(messages []domain.EmailMessage) string {
+	if len(messages) == 0 {
+		return "none"
+	}
+	return messages[0].MessageID
+}
+
+// describeEnhancedSearchCriteria - улучшенное описание критериев
+func (a *IMAPAdapter) describeEnhancedSearchCriteria(criteria *imap.SearchCriteria) string {
+	description := []string{}
+
+	if criteria.Since != (time.Time{}) {
+		days := int(time.Since(criteria.Since).Hours() / 24)
+		description = append(description, fmt.Sprintf("since:%s(%d days)",
+			criteria.Since.Format("2006-01-02"), days))
+	}
+
+	if criteria.Header != nil {
+		for key, values := range criteria.Header {
+			if key == "Subject" && len(values) > 3 {
+				description = append(description,
+					fmt.Sprintf("subject:%d variants", len(values)))
+			} else {
+				description = append(description,
+					fmt.Sprintf("%s:%d values", key, len(values)))
+			}
+		}
+	}
+
+	if len(description) == 0 {
+		return "default_criteria"
+	}
+
+	return strings.Join(description, " | ")
+}
+
+// internal/infrastructure/email/imap_adapter.go
+// createEnhancedThreadSearchCriteria - НОВЫЙ МЕТОД с конфигурацией
+func (a *IMAPAdapter) createEnhancedThreadSearchCriteria(threadData ports.ThreadSearchCriteria) (*imap.SearchCriteria, error) {
+	ctx := context.Background()
+	criteria := &imap.SearchCriteria{}
+
+	// ✅ СТРАТЕГИЯ 1: КОМБИНИРОВАННЫЕ MESSAGE-ID КРИТЕРИИ
+	var allMessageIDs []string
+
+	if threadData.MessageID != "" {
+		allMessageIDs = append(allMessageIDs, threadData.MessageID)
+	}
+	if threadData.InReplyTo != "" {
+		allMessageIDs = append(allMessageIDs, threadData.InReplyTo)
+	}
+	if len(threadData.References) > 0 {
+		allMessageIDs = append(allMessageIDs, threadData.References...)
+	}
+
+	allMessageIDs = a.removeDuplicateMessageIDs(allMessageIDs)
+
+	if len(allMessageIDs) > 0 {
+		criteria.Header = map[string][]string{
+			"Message-ID":  allMessageIDs,
+			"In-Reply-To": allMessageIDs,
+		}
+
+		if len(threadData.References) > 0 {
+			criteria.Header["References"] = threadData.References
+		}
+	}
+
+	// ✅ СТРАТЕГИЯ 2: SUBJECT-BASED ПОИСК С ПРЕФИКСАМИ ИЗ КОНФИГУРАЦИИ
+	if threadData.Subject != "" {
+		subjectVariants, err := a.searchService.GenerateSearchSubjectVariants(ctx, threadData.Subject)
+		if err != nil {
+			a.logger.Warn(ctx, "Failed to generate subject variants, using basic subject",
+				"subject", threadData.Subject, "error", err.Error())
+			subjectVariants = []string{threadData.Subject}
+		}
+
+		if criteria.Header == nil {
+			criteria.Header = make(map[string][]string)
+		}
+
+		criteria.Header["Subject"] = subjectVariants
+	}
+
+	// ✅ СТРАТЕГИЯ 3: РАСШИРЕННЫЙ ВРЕМЕННОЙ ДИАПАЗОН ИЗ КОНФИГУРАЦИИ
+	searchConfig, err := a.searchService.GetThreadSearchConfig(ctx)
+	if err != nil {
+		a.logger.Warn(ctx, "Failed to get search config, using default 90 days",
+			"error", err.Error())
+		criteria.Since = time.Now().Add(-90 * 24 * time.Hour)
+	} else {
+		criteria.Since = searchConfig.GetSearchSince("extended")
+	}
+
+	a.logger.Info(ctx, "🎯 ENHANCED thread search criteria created",
+		"message_ids_count", len(allMessageIDs),
+		"subject", threadData.Subject,
+		"since", criteria.Since.Format("2006-01-02"),
+		"search_strategies", "combined_message_id+subject+extended_time")
+
+	return criteria, nil // ✅ ВОЗВРАЩАЕМ error
+}
+
+// removeDuplicateMessageIDs - удаляем дубликаты Message-ID
+func (a *IMAPAdapter) removeDuplicateMessageIDs(ids []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		// Нормализуем Message-ID (убираем < > если есть)
+		normalizedID := strings.Trim(id, "<>")
+		if !seen[normalizedID] {
+			seen[normalizedID] = true
+			result = append(result, normalizedID)
+		}
+	}
+
+	return result
 }
 
 // createThreadSearchCriteria создает комбинированные критерии для поиска цепочек

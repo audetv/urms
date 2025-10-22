@@ -1,0 +1,50 @@
+# config/email_search.yaml
+email_search:
+  thread_search:
+    default_days_back: 180    # Стандартный поиск - 6 месяцев
+    extended_days_back: 365   # Расширенный поиск - 1 год  
+    max_days_back: 730        # Максимальный поиск - 2 года
+    fetch_timeout: 120s       # Таймаут операций
+    include_seen_messages: true # Искать все сообщения, не только непрочитанные
+    subject_prefixes:
+      - "Re:"
+      - "RE:" 
+      - "Fwd:"
+      - "FW:"
+      - "Ответ:"
+      - "FWD:"
+      
+  provider_config:
+    gmail:
+      max_days_back: 365      # Gmail поддерживает 1+ год истории
+      search_timeout: 180s    # Увеличенный таймаут для Gmail
+      supported_flags:
+        - "X-GM-RAW"
+        - "X-GM-THRID"
+      optimizations:
+        - "gmail_thread_id"
+        - "extended_history"
+        - "label_support"
+        
+    yandex:
+      max_days_back: 90       # Yandex ограничения
+      search_timeout: 90s
+      supported_flags: []
+      optimizations:
+        - "russian_subject_support"
+        - "cyrillic_encoding"
+        
+    outlook:
+      max_days_back: 180      # Exchange/Outlook
+      search_timeout: 120s
+      supported_flags: []
+      optimizations:
+        - "exchange_support"
+        - "conversation_id"
+        
+    generic:
+      max_days_back: 180      # Для неизвестных провайдеров
+      search_timeout: 120s
+      supported_flags: []
+      optimizations:
+        - "standard_search"
