@@ -18,6 +18,7 @@ import (
 	"github.com/audetv/urms/internal/infrastructure/common/id"
 	"github.com/audetv/urms/internal/infrastructure/email"
 	imapclient "github.com/audetv/urms/internal/infrastructure/email/imap"
+	"github.com/audetv/urms/internal/infrastructure/email/search_strategies"
 	"github.com/audetv/urms/internal/infrastructure/health"
 	"github.com/audetv/urms/internal/infrastructure/http/handlers"
 	"github.com/audetv/urms/internal/infrastructure/http/middleware"
@@ -75,21 +76,11 @@ func main() {
 	time.Sleep(100 * time.Millisecond)
 
 	// ✅ ТРЕТЬЕ: Запускаем фоновые задачи ПОСЛЕ HTTP сервера
-	backgroundManager := services.NewBackgroundTaskManager(logger)
+	// backgroundManager := services.NewBackgroundTaskManager(logger)
 
-	// Регистрируем фоновые задачи
-	if cfg.Email.IMAP.PollInterval > 0 {
-		emailPollerTask := email.NewEmailPollerTask(
-			dependencies.EmailService,
-			cfg.Email.IMAP.PollInterval,
-			cfg.Email.IMAP.OperationTimeout,
-			logger,
-		)
-		backgroundManager.RegisterTask(emailPollerTask)
-	}
-
-	// Запускаем фоновые задачи
-	if err := backgroundManager.StartAll(ctx); err != nil {
+	// 4. Запуск фоновых задач ПОСЛЕ HTTP сервера
+	backgroundManager, err := setupBackgroundTasks(dependencies, logger)
+	if err != nil {
 		logger.Error(ctx, "❌ CRITICAL: Failed to start background tasks - email processing unavailable",
 			"error", err,
 			"impact", "System cannot process incoming emails - core functionality impaired")
@@ -116,6 +107,7 @@ type Dependencies struct {
 	CustomerService ports.CustomerService
 	// ✅ ДОБАВЛЯЕМ конфигурационный провайдер
 	SearchConfigProvider ports.EmailSearchConfigProvider
+	EmailPipeline        ports.EmailPipeline
 }
 
 // setupDependencies инициализирует все зависимости приложения
@@ -173,12 +165,107 @@ func setupDependencies(cfg *config.Config, logger ports.Logger) (*Dependencies, 
 		logger,
 	)
 
+	// ✅ ИСПОЛЬЗУЕМ уже созданные TaskService и CustomerService + SearchConfig
+	messageProcessor := email.NewMessageProcessor(
+		deps.TaskService,
+		deps.CustomerService,
+		deps.EmailGateway,
+		deps.SearchConfigProvider, // ✅ ПЕРЕДАЕМ конфигурацию
+		logger,
+	)
+
+	// Создаем Email Pipeline
+	emailPipeline, err := setupEmailPipeline(deps.EmailGateway, messageProcessor, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup email pipeline: %w", err)
+	}
+	deps.EmailPipeline = emailPipeline
+
 	// Инициализируем health checks
 	deps.HealthAggregator = setupHealthChecks(deps.EmailGateway, deps.DB)
 
 	logger.Info(context.Background(), "✅ Dependencies initialized successfully")
 
 	return deps, nil
+}
+
+func setupEmailPipeline(
+	emailGateway ports.EmailGateway,
+	messageProcessor ports.MessageProcessor,
+	logger ports.Logger,
+) (ports.EmailPipeline, error) {
+
+	ctx := context.Background()
+
+	// 1. Создаем и инициализируем Search Strategy Factory
+	searchFactory := search_strategies.NewSearchStrategyFactory(logger)
+	strategyRegistry := search_strategies.NewStrategyRegistry(searchFactory, logger)
+
+	// Регистрируем все стратегии
+	if err := strategyRegistry.RegisterAllStrategies(ctx); err != nil {
+		return nil, fmt.Errorf("failed to register search strategies: %w", err)
+	}
+
+	// 2. Создаем конфигурацию провайдера
+	providerConfig := &domain.EmailProviderConfig{
+		ProviderType:     "yandex", // Можно определить из конфигурации
+		PipelineStrategy: "fast_simple",
+		SearchConfig: domain.SearchStrategyConfig{
+			Complexity:      domain.SearchComplexitySimple,
+			MaxMessageIDs:   1,
+			TimeframeDays:   180,
+			SubjectPrefixes: []string{"Re:", "RE:", "Fwd:", "FW:", "Ответ:"},
+			Enabled:         true,
+		},
+		PipelineConfig: domain.PipelineRuntimeConfig{
+			FetchBatchSize:   10,
+			WorkerCount:      2,
+			QueueSize:        20,
+			FetchTimeout:     30 * time.Second,
+			ProcessTimeout:   60 * time.Second,
+			MaxRetries:       2,
+			EnableMonitoring: true,
+			EnableMetrics:    true,
+		},
+	}
+
+	// 3. Создаем Pipeline Factory
+	pipelineFactory := email.NewEmailPipelineFactory(
+		emailGateway,
+		messageProcessor,
+		searchFactory,
+		logger,
+	)
+
+	// 4. Создаем Pipeline
+	pipeline, err := pipelineFactory.CreatePipeline(ctx, providerConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create email pipeline: %w", err)
+	}
+
+	logger.Info(ctx, "✅ Email Pipeline integrated successfully",
+		"provider_type", providerConfig.ProviderType,
+		"pipeline_strategy", providerConfig.PipelineStrategy)
+
+	return pipeline, nil
+}
+
+func setupBackgroundTasks(deps *Dependencies, logger ports.Logger) (*services.BackgroundTaskManager, error) {
+	taskManager := services.NewBackgroundTaskManager(logger)
+
+	// ✅ ИСПОЛЬЗУЕМ PIPELINE в Email Poller Task
+	emailPoller := email.NewEmailPollerTask(
+		deps.EmailPipeline, // ✅ ПЕРЕДАЕМ PIPELINE
+		30*time.Second,
+		120*time.Second,
+		logger,
+	)
+
+	taskManager.RegisterTask(emailPoller)
+
+	logger.Info(context.Background(), "✅ Background tasks configured with Email Pipeline")
+
+	return taskManager, nil
 }
 
 // setupSearchConfig настраивает конфигурационную систему для email поиска
@@ -391,6 +478,7 @@ func setupGinRouter(deps *Dependencies, logger ports.Logger) *gin.Engine {
 	taskHandler := handlers.NewTaskHandler(deps.TaskService, logger)
 	customerHandler := handlers.NewCustomerHandler(deps.CustomerService, deps.TaskService, logger)
 	healthHandler := handlers.NewHealthHandler(deps.HealthAggregator)
+	pipelineHandler := handlers.NewPipelineHandler(deps.EmailPipeline)
 
 	// API Routes v1
 	api := router.Group("/api/v1")
@@ -421,6 +509,13 @@ func setupGinRouter(deps *Dependencies, logger ports.Logger) *gin.Engine {
 			customers.DELETE("/:id", customerHandler.DeleteCustomer)
 			customers.GET("/:id/profile", customerHandler.GetCustomerProfile)
 			customers.GET("/:id/tasks", customerHandler.GetCustomerTasks)
+		}
+
+		pipeline := api.Group("/pipeline")
+		{
+			pipeline.GET("/health", pipelineHandler.GetHealth)
+			pipeline.GET("/metrics", pipelineHandler.GetMetrics)
+			pipeline.POST("/process-batch", pipelineHandler.ProcessBatch)
 		}
 	}
 

@@ -8,11 +8,10 @@ import (
 	"time"
 
 	"github.com/audetv/urms/internal/core/ports"
-	"github.com/audetv/urms/internal/core/services"
 )
 
 type EmailPollerTask struct {
-	emailService     *services.EmailService
+	emailPipeline    ports.EmailPipeline // ✅ ДОБАВЛЯЕМ PIPELINE
 	pollInterval     time.Duration
 	operationTimeout time.Duration
 	logger           ports.Logger
@@ -22,13 +21,13 @@ type EmailPollerTask struct {
 }
 
 func NewEmailPollerTask(
-	emailService *services.EmailService,
+	emailPipeline ports.EmailPipeline, // ✅ ПРИНИМАЕМ PIPELINE вместо EmailService
 	pollInterval time.Duration,
 	operationTimeout time.Duration,
 	logger ports.Logger,
 ) *EmailPollerTask {
 	return &EmailPollerTask{
-		emailService:     emailService,
+		emailPipeline:    emailPipeline,
 		pollInterval:     pollInterval,
 		operationTimeout: operationTimeout,
 		logger:           logger,
@@ -110,21 +109,38 @@ func (t *EmailPollerTask) pollingLoop(ctx context.Context) {
 	}
 }
 
+// executePoll выполняет polling используя Email Pipeline
 func (t *EmailPollerTask) executePoll(ctx context.Context) {
 	pollCtx := context.WithValue(ctx, ports.CorrelationIDKey, "email-poller-"+generateShortID())
 
-	// ✅ НОРМАЛЬНЫЕ ЛОГИ (без принудительных)
-	t.logger.Info(pollCtx, "email poller running scheduled check")
+	t.logger.Info(pollCtx, "🔄 Email poller running scheduled check")
 
 	// Создаем контекст с таймаутом операции
 	timeoutCtx, cancel := context.WithTimeout(pollCtx, t.operationTimeout)
 	defer cancel()
 
 	startTime := time.Now()
-	if err := t.emailService.ProcessIncomingEmails(timeoutCtx); err != nil {
-		t.logger.Error(pollCtx, "email poller error", "error", err)
+
+	// ✅ ИСПОЛЬЗУЕМ PIPELINE для обработки
+	if err := t.emailPipeline.ProcessBatch(timeoutCtx); err != nil {
+		t.logger.Error(pollCtx, "❌ Email pipeline processing failed",
+			"error", err.Error(),
+			"duration", time.Since(startTime).String())
 	} else {
 		duration := time.Since(startTime)
-		t.logger.Info(pollCtx, "email poller completed successfully", "duration", duration)
+		t.logger.Info(pollCtx, "✅ Email pipeline completed successfully",
+			"duration", duration.String(),
+			"throughput", t.getPipelineMetrics(pollCtx))
 	}
+}
+
+// getPipelineMetrics получает метрики pipeline
+func (t *EmailPollerTask) getPipelineMetrics(ctx context.Context) string {
+	metrics, err := t.emailPipeline.GetMetrics(ctx)
+	if err != nil {
+		return "metrics_unavailable"
+	}
+
+	return fmt.Sprintf("processed: %d, failed: %d, queue: %d",
+		metrics.TotalProcessed, metrics.TotalFailed, metrics.CurrentQueueSize)
 }
