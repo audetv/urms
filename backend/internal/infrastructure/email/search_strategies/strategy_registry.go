@@ -23,7 +23,7 @@ func NewStrategyRegistry(factory ports.SearchStrategyFactory, logger ports.Logge
 	}
 }
 
-// RegisterAllStrategies регистрирует все стандартные стратегииии
+// RegisterAllStrategies регистрирует все стандартные стратегии
 func (r *StrategyRegistry) RegisterAllStrategies(ctx context.Context) error {
 	// Базовая конфигурация для инициализации
 	baseConfig := &domain.SearchStrategyConfig{
@@ -58,9 +58,25 @@ func (r *StrategyRegistry) RegisterAllStrategies(ctx context.Context) error {
 		return fmt.Errorf("failed to register generic search strategy: %w", err)
 	}
 
+	// Регистрируем алиасы для лучшего обнаружения
+	aliases := map[string]ports.SearchStrategy{
+		"imap.yandex.ru": yandexStrategy,
+		"imap.gmail.com": gmailStrategy,
+		"imap":           genericStrategy,
+		"default":        genericStrategy,
+	}
+
+	for alias, strategy := range aliases {
+		if err := r.factory.RegisterSearchStrategy(ctx, alias, strategy); err != nil {
+			r.logger.Warn(ctx, "Failed to register strategy alias",
+				"alias", alias,
+				"error", err.Error())
+		}
+	}
+
 	r.logger.Info(ctx, "All search strategies registered successfully",
-		"total_strategies", 3,
-		"strategies", []string{"yandex", "gmail", "generic"})
+		"total_strategies", len(aliases)+3, // 3 основные + алиасы
+		"main_strategies", []string{"yandex", "gmail", "generic"})
 
 	return nil
 }

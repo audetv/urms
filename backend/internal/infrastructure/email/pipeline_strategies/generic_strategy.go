@@ -2,79 +2,80 @@
 package pipeline_strategies
 
 import (
+	"context"
 	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
+	"github.com/audetv/urms/internal/infrastructure/email/search_strategies"
 )
 
-// GenericPipelineStrategy implements ports.PipelineStrategy for generic providers
+// GenericPipelineStrategy реализует ports.PipelineStrategy для generic провайдеров
 type GenericPipelineStrategy struct {
 	config *domain.EmailProviderConfig
 	logger ports.Logger
 }
 
-// NewGenericPipelineStrategy creates a new generic strategy
-func NewGenericPipelineStrategy(
-	config *domain.EmailProviderConfig,
-	logger ports.Logger,
-) *GenericPipelineStrategy {
-	return &GenericPipelineStrategy{
-		config: config,
-		logger: logger,
+// GetSearchStrategy возвращает generic search strategy
+func (s *GenericPipelineStrategy) GetSearchStrategy() ports.SearchStrategy {
+	// Создаем структуру напрямую
+	searchStrategy := &search_strategies.GenericSearchStrategy{}
+
+	// Конфигурируем стратегию
+	if err := searchStrategy.Configure(&s.config.SearchConfig); err != nil {
+		s.logger.Warn(context.Background(),
+			"Failed to configure Generic search strategy",
+			"error", err.Error())
 	}
+
+	return searchStrategy
 }
 
-// GetBatchSize returns the batch size from configuration or default
+// GetBatchSize возвращает batch size для generic провайдеров
 func (s *GenericPipelineStrategy) GetBatchSize() int {
 	if s.config.PipelineConfig.FetchBatchSize > 0 {
 		return s.config.PipelineConfig.FetchBatchSize
 	}
-	// Default for generic providers
-	return 25
+	return 25 // Default для generic
 }
 
-// GetWorkerCount returns the worker count from configuration or default
+// GetWorkerCount возвращает количество воркеров для generic провайдеров
 func (s *GenericPipelineStrategy) GetWorkerCount() int {
 	if s.config.PipelineConfig.WorkerCount > 0 {
 		return s.config.PipelineConfig.WorkerCount
 	}
-	// Default for generic providers
-	return 3
+	return 3 // Default для generic
 }
 
-// GetQueueSize returns the queue size from configuration or default
+// GetQueueSize возвращает размер очереди для generic провайдеров
 func (s *GenericPipelineStrategy) GetQueueSize() int {
 	if s.config.PipelineConfig.QueueSize > 0 {
 		return s.config.PipelineConfig.QueueSize
 	}
-	// Default for generic providers
-	return 50
+	return 50 // Default для generic
 }
 
-// GetFetchTimeout returns the fetch operation timeout from configuration
+// GetFetchTimeout возвращает fetch timeout для generic провайдеров
 func (s *GenericPipelineStrategy) GetFetchTimeout() time.Duration {
 	if s.config.PipelineConfig.FetchTimeout > 0 {
 		return s.config.PipelineConfig.FetchTimeout
 	}
-	// Default for generic providers
-	return 45 * time.Second
+	return 45 * time.Second // Default для generic
 }
 
-// GetProcessTimeout returns the message processing timeout from configuration
+// GetProcessTimeout возвращает process timeout для generic провайдеров
 func (s *GenericPipelineStrategy) GetProcessTimeout() time.Duration {
 	if s.config.PipelineConfig.ProcessTimeout > 0 {
 		return s.config.PipelineConfig.ProcessTimeout
 	}
-	// Default for generic providers
-	return 90 * time.Second
+	return 90 * time.Second // Default для generic
 }
 
-// GetRetryPolicy returns the retry policy from configuration
+// GetRetryPolicy возвращает retry policy для generic провайдеров
 func (s *GenericPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	maxRetries := s.config.PipelineConfig.MaxRetries
 	if maxRetries <= 0 {
-		maxRetries = 2 // Default for generic
+		maxRetries = 2 // Default для generic
 	}
 
 	return ports.RetryPolicy{
@@ -85,7 +86,12 @@ func (s *GenericPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	}
 }
 
-// ✅ ДОБАВЛЯЕМ конфигурацию для фабрики
+// GetSearchStrategyConfig возвращает конфигурацию search strategy
 func (s *GenericPipelineStrategy) GetSearchStrategyConfig() domain.SearchStrategyConfig {
 	return s.config.SearchConfig
+}
+
+// GetProviderType возвращает тип провайдера
+func (s *GenericPipelineStrategy) GetProviderType() string {
+	return "generic"
 }

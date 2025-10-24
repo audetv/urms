@@ -30,6 +30,11 @@ func NewFetchCriteriaBuilder(
 
 // BuildStandardCriteria создает стандартные критерии из конфигурации
 func (b *FetchCriteriaBuilder) BuildStandardCriteria(ctx context.Context) ports.FetchCriteria {
+	if b.fetcher == nil {
+		b.logger.Warn(ctx, "Fetcher not set in criteria builder, using fallback")
+		return b.buildFallbackCriteria()
+	}
+
 	providerType := b.fetcher.GetProviderType()
 
 	// Получаем search strategy для конфигурации

@@ -2,79 +2,80 @@
 package pipeline_strategies
 
 import (
+	"context"
 	"time"
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
+	"github.com/audetv/urms/internal/infrastructure/email/search_strategies"
 )
 
-// GmailPipelineStrategy implements ports.PipelineStrategy for Gmail
+// GmailPipelineStrategy реализует ports.PipelineStrategy для Gmail
 type GmailPipelineStrategy struct {
 	config *domain.EmailProviderConfig
 	logger ports.Logger
 }
 
-// NewGmailPipelineStrategy creates a new Gmail-optimized strategy
-func NewGmailPipelineStrategy(
-	config *domain.EmailProviderConfig,
-	logger ports.Logger,
-) *GmailPipelineStrategy {
-	return &GmailPipelineStrategy{
-		config: config,
-		logger: logger,
+// GetSearchStrategy возвращает Gmail-specific search strategy
+func (s *GmailPipelineStrategy) GetSearchStrategy() ports.SearchStrategy {
+	// Создаем структуру напрямую
+	searchStrategy := &search_strategies.GmailSearchStrategy{}
+
+	// Конфигурируем стратегию
+	if err := searchStrategy.Configure(&s.config.SearchConfig); err != nil {
+		s.logger.Warn(context.Background(),
+			"Failed to configure Gmail search strategy",
+			"error", err.Error())
 	}
+
+	return searchStrategy
 }
 
-// GetBatchSize returns the optimal batch size for Gmail from configuration
+// GetBatchSize возвращает batch size для Gmail
 func (s *GmailPipelineStrategy) GetBatchSize() int {
 	if s.config.PipelineConfig.FetchBatchSize > 0 {
 		return s.config.PipelineConfig.FetchBatchSize
 	}
-	// Default for Gmail if not configured
-	return 50
+	return 50 // Default для Gmail
 }
 
-// GetWorkerCount returns the optimal number of workers for Gmail from configuration
+// GetWorkerCount возвращает количество воркеров для Gmail
 func (s *GmailPipelineStrategy) GetWorkerCount() int {
 	if s.config.PipelineConfig.WorkerCount > 0 {
 		return s.config.PipelineConfig.WorkerCount
 	}
-	// Default for Gmail if not configured
-	return 5
+	return 5 // Default для Gmail
 }
 
-// GetQueueSize returns the optimal queue size for Gmail from configuration
+// GetQueueSize возвращает размер очереди для Gmail
 func (s *GmailPipelineStrategy) GetQueueSize() int {
 	if s.config.PipelineConfig.QueueSize > 0 {
 		return s.config.PipelineConfig.QueueSize
 	}
-	// Default for Gmail if not configured
-	return 100
+	return 100 // Default для Gmail
 }
 
-// GetFetchTimeout returns the fetch operation timeout from configuration
+// GetFetchTimeout возвращает fetch timeout для Gmail
 func (s *GmailPipelineStrategy) GetFetchTimeout() time.Duration {
 	if s.config.PipelineConfig.FetchTimeout > 0 {
 		return s.config.PipelineConfig.FetchTimeout
 	}
-	// Default for Gmail if not configured
-	return 60 * time.Second
+	return 60 * time.Second // Default для Gmail
 }
 
-// GetProcessTimeout returns the message processing timeout from configuration
+// GetProcessTimeout возвращает process timeout для Gmail
 func (s *GmailPipelineStrategy) GetProcessTimeout() time.Duration {
 	if s.config.PipelineConfig.ProcessTimeout > 0 {
 		return s.config.PipelineConfig.ProcessTimeout
 	}
-	// Default for Gmail if not configured
-	return 120 * time.Second
+	return 120 * time.Second // Default для Gmail
 }
 
-// GetRetryPolicy returns the retry policy for Gmail operations
+// GetRetryPolicy возвращает retry policy для Gmail
 func (s *GmailPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	maxRetries := s.config.PipelineConfig.MaxRetries
 	if maxRetries <= 0 {
-		maxRetries = 3 // Default for Gmail
+		maxRetries = 3 // Default для Gmail
 	}
 
 	return ports.RetryPolicy{
@@ -85,7 +86,12 @@ func (s *GmailPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	}
 }
 
-// ✅ ДОБАВЛЯЕМ конфигурацию для фабрики
-func (s *GmailPipelineStrategy) GetSeaGetSearchStrategyConfigrchStrategy() domain.SearchStrategyConfig {
+// GetSearchStrategyConfig возвращает конфигурацию search strategy
+func (s *GmailPipelineStrategy) GetSearchStrategyConfig() domain.SearchStrategyConfig {
 	return s.config.SearchConfig
+}
+
+// GetProviderType возвращает тип провайдера
+func (s *GmailPipelineStrategy) GetProviderType() string {
+	return "gmail"
 }

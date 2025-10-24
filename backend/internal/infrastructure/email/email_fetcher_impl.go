@@ -42,7 +42,7 @@ func NewEmailFetcherImpl(
 	providerType string,
 ) *EmailFetcherImpl {
 
-	return &EmailFetcherImpl{
+	fetcher := &EmailFetcherImpl{
 		gateway:         gateway,
 		searchFactory:   searchFactory,
 		criteriaBuilder: criteriaBuilder,
@@ -50,6 +50,13 @@ func NewEmailFetcherImpl(
 		progress:        &FetchProgressTracker{status: "initialized"},
 		providerType:    providerType,
 	}
+
+	// Устанавливаем criteria builder в fetcher
+	if criteriaBuilder != nil {
+		criteriaBuilder.fetcher = fetcher
+	}
+
+	return fetcher
 }
 
 // FetchBatch получает батч сообщений по критериям

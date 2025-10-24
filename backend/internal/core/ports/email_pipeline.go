@@ -122,14 +122,14 @@ type SearchStrategy interface {
 	GetTimeframeDays() int
 }
 
-// PipelineStrategyFactory creates pipeline strategies based on provider type
-type PipelineStrategyFactory interface {
-	// GetStrategy returns the appropriate strategy for the provider
-	GetStrategy(providerType string) PipelineStrategy
+// // PipelineStrategyFactory creates pipeline strategies based on provider type
+// type PipelineStrategyFactory interface {
+// 	// GetStrategy returns the appropriate strategy for the provider
+// 	GetStrategy(providerType string) PipelineStrategy
 
-	// RegisterStrategy registers a new strategy implementation
-	RegisterStrategy(providerType string, strategy PipelineStrategy)
+// 	// RegisterStrategy registers a new strategy implementation
+// 	RegisterStrategy(providerType string, strategy PipelineStrategy)
 
-	// GetSupportedProviders returns list of supported providers
-	GetSupportedProviders() []string
-}
+// 	// GetSupportedProviders returns list of supported providers
+// 	GetSupportedProviders() []string
+// }
