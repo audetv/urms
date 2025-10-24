@@ -58,6 +58,8 @@ type MessageQueue interface {
 
 	// Clear removes all messages from the queue (for testing/reset)
 	Clear(ctx context.Context) error
+
+	GetMetrics(ctx context.Context) *QueueMetrics // ✅ ДОБАВЛЯЕМ метод
 }
 
 // WorkerPool manages concurrent message processing

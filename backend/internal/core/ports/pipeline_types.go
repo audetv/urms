@@ -73,3 +73,13 @@ type ComponentStatus struct {
 	Message string
 	Since   time.Time
 }
+
+// QueueMetrics представляет метрики очереди сообщений
+type QueueMetrics struct {
+	TotalEnqueued   int64
+	TotalDequeued   int64
+	MaxQueueSize    int
+	CurrentSize     int
+	EnqueueWaitTime time.Duration
+	DequeueWaitTime time.Duration
+}
