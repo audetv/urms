@@ -104,16 +104,19 @@ type PipelineStrategy interface {
 
 // SearchStrategy defines provider-specific search behavior
 type SearchStrategy interface {
-	// CreateThreadSearchCriteria creates IMAP search criteria for thread detection
+	// Configure настраивает стратегию с предоставленной конфигурацией
+	Configure(config *domain.SearchStrategyConfig) error
+
+	// CreateThreadSearchCriteria создает IMAP критерии поиска
 	CreateThreadSearchCriteria(threadData ThreadSearchCriteria) (*imap.SearchCriteria, error)
 
-	// GetComplexity returns the search complexity level
-	GetComplexity() SearchComplexity
+	// GetComplexity возвращает уровень сложности поиска
+	GetComplexity() domain.SearchComplexity
 
-	// GetMaxMessageIDs returns the maximum number of Message-IDs to include in search
+	// GetMaxMessageIDs возвращает максимальное количество Message-ID
 	GetMaxMessageIDs() int
 
-	// GetTimeframeDays returns the search timeframe in days
+	// GetTimeframeDays возвращает временной диапазон
 	GetTimeframeDays() int
 }
 

@@ -3,6 +3,7 @@ package search_strategies
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,27 +13,29 @@ import (
 )
 
 // GmailSearchStrategy реализует ports.SearchStrategy для Gmail
-// Использует полный набор возможностей Gmail IMAP
 type GmailSearchStrategy struct {
-	config *domain.EmailProviderConfig
+	config *domain.SearchStrategyConfig // ✅ ПРАВИЛЬНЫЙ ТИП
 	logger ports.Logger
 }
 
-// NewGmailSearchStrategy создает новую Gmail-оптимизированную стратегию
-func NewGmailSearchStrategy(
-	config *domain.EmailProviderConfig,
-	logger ports.Logger,
-) *GmailSearchStrategy {
-	if err := config.Validate(); err != nil {
-		logger.Warn(context.Background(),
-			"Gmail search strategy configuration validation warning",
-			"error", err.Error())
+// Configure настраивает стратегию с конфигурацией
+func (s *GmailSearchStrategy) Configure(config *domain.SearchStrategyConfig) error {
+	if config == nil {
+		return fmt.Errorf("search strategy configuration is required")
 	}
 
-	return &GmailSearchStrategy{
-		config: config,
-		logger: logger,
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid search strategy configuration: %w", err)
 	}
+
+	s.config = config
+	s.logger.Info(context.Background(),
+		"Gmail search strategy configured",
+		"complexity", s.GetComplexity().String(),
+		"max_message_ids", s.GetMaxMessageIDs(),
+		"timeframe_days", s.GetTimeframeDays())
+
+	return nil
 }
 
 // CreateThreadSearchCriteria создает комплексные IMAP критерии поиска для Gmail
@@ -40,7 +43,11 @@ func (s *GmailSearchStrategy) CreateThreadSearchCriteria(threadData ports.Thread
 	ctx := context.Background()
 	criteria := &imap.SearchCriteria{}
 
-	// GMAIL-OPTIMIZED: Полный набор критериев в пределах конфигурации
+	if s.config == nil {
+		return nil, fmt.Errorf("search strategy not configured")
+	}
+
+	// GMAIL-OPTIMIZED: Полный набор критериев
 	messageIDs := s.collectMessageIDs(threadData)
 
 	if len(messageIDs) > 0 {
@@ -60,7 +67,7 @@ func (s *GmailSearchStrategy) CreateThreadSearchCriteria(threadData ports.Thread
 	criteria.Since = time.Now().Add(-time.Duration(timeframeDays) * 24 * time.Hour)
 
 	// Gmail-specific: поиск по вариантам subject если настроено
-	if threadData.Subject != "" && len(s.config.SearchConfig.SubjectPrefixes) > 0 {
+	if threadData.Subject != "" && len(s.config.SubjectPrefixes) > 0 {
 		subjectVariants := s.generateSubjectVariants(threadData.Subject)
 		if criteria.Header == nil {
 			criteria.Header = make(map[string][]string)
@@ -74,25 +81,47 @@ func (s *GmailSearchStrategy) CreateThreadSearchCriteria(threadData ports.Thread
 
 	s.logger.Debug(ctx, "Gmail search timeframe configured",
 		"timeframe_days", timeframeDays,
-		"since_date", criteria.Since.Format("2006-01-02"),
-		"provider_capability", "extended_timeframe_and_complex_queries")
+		"since_date", criteria.Since.Format("2006-01-02"))
 
 	return criteria, nil
 }
 
 // GetComplexity возвращает уровень сложности поиска
 func (s *GmailSearchStrategy) GetComplexity() domain.SearchComplexity {
-	return s.config.GetSearchComplexity() // Gmail поддерживает любую сложность
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default complexity")
+		return domain.SearchComplexityComplex
+	}
+
+	return s.config.Complexity // Gmail поддерживает любую сложность
 }
 
 // GetMaxMessageIDs возвращает максимальное количество Message-ID для поиска
 func (s *GmailSearchStrategy) GetMaxMessageIDs() int {
-	return s.config.GetMaxMessageIDs() // Gmail поддерживает много Message-ID
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default max message IDs")
+		return 10
+	}
+
+	if s.config.MaxMessageIDs > 0 {
+		return s.config.MaxMessageIDs
+	}
+
+	return 10 // Default for Gmail
 }
 
 // GetTimeframeDays возвращает временной диапазон поиска в днях
 func (s *GmailSearchStrategy) GetTimeframeDays() int {
-	return s.config.GetTimeframeDays() // Gmail поддерживает extended timeframe
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default timeframe")
+		return 365
+	}
+
+	if s.config.TimeframeDays > 0 {
+		return s.config.TimeframeDays
+	}
+
+	return 365 // Default for Gmail
 }
 
 // collectMessageIDs собирает Message-ID в пределах лимитов конфигурации
@@ -144,11 +173,15 @@ func (s *GmailSearchStrategy) normalizeMessageIDs(ids []string) []string {
 func (s *GmailSearchStrategy) generateSubjectVariants(baseSubject string) []string {
 	variants := []string{baseSubject}
 
+	if s.config == nil {
+		return variants
+	}
+
 	// Получаем чистый subject без префиксов
 	cleanSubject := s.extractCleanSubject(baseSubject)
 
 	// Добавляем варианты с настроенными префиксами
-	for _, prefix := range s.config.SearchConfig.SubjectPrefixes {
+	for _, prefix := range s.config.SubjectPrefixes {
 		variants = append(variants, prefix+cleanSubject)
 	}
 
@@ -159,7 +192,11 @@ func (s *GmailSearchStrategy) generateSubjectVariants(baseSubject string) []stri
 func (s *GmailSearchStrategy) extractCleanSubject(subject string) string {
 	cleanSubject := subject
 
-	for _, prefix := range s.config.SearchConfig.SubjectPrefixes {
+	if s.config == nil {
+		return cleanSubject
+	}
+
+	for _, prefix := range s.config.SubjectPrefixes {
 		if strings.HasPrefix(strings.ToUpper(cleanSubject), strings.ToUpper(prefix)) {
 			cleanSubject = strings.TrimSpace(cleanSubject[len(prefix):])
 			break

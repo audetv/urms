@@ -6,7 +6,6 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
-	"github.com/audetv/urms/internal/infrastructure/email/search_strategies"
 )
 
 // GenericPipelineStrategy implements ports.PipelineStrategy for generic providers
@@ -86,7 +85,7 @@ func (s *GenericPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	}
 }
 
-// GetSearchStrategy returns the generic search strategy
-func (s *GenericPipelineStrategy) GetSearchStrategy() ports.SearchStrategy {
-	return search_strategies.NewGenericSearchStrategy(s.config, s.logger)
+// ✅ ДОБАВЛЯЕМ конфигурацию для фабрики
+func (s *GenericPipelineStrategy) GetSearchStrategyConfig() domain.SearchStrategyConfig {
+	return s.config.SearchConfig
 }

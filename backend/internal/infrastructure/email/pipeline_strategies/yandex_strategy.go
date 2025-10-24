@@ -6,7 +6,6 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
-	"github.com/audetv/urms/internal/infrastructure/email/search_strategies"
 )
 
 // YandexPipelineStrategy implements ports.PipelineStrategy for Yandex
@@ -75,7 +74,7 @@ func (s *YandexPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	}
 }
 
-// GetSearchStrategy returns the Yandex-specific search strategy
-func (s *YandexPipelineStrategy) GetSearchStrategy() ports.SearchStrategy {
-	return search_strategies.NewYandexSearchStrategy(s.config, s.logger)
+// ✅ ДОБАВЛЯЕМ конфигурацию для фабрики
+func (s *YandexPipelineStrategy) GetSearchStrategyConfig() domain.SearchStrategyConfig {
+	return s.config.SearchConfig
 }

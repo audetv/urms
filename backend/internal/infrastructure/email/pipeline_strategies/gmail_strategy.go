@@ -6,7 +6,6 @@ import (
 
 	"github.com/audetv/urms/internal/core/domain"
 	"github.com/audetv/urms/internal/core/ports"
-	"github.com/audetv/urms/internal/infrastructure/email/search_strategies"
 )
 
 // GmailPipelineStrategy implements ports.PipelineStrategy for Gmail
@@ -86,7 +85,7 @@ func (s *GmailPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	}
 }
 
-// GetSearchStrategy returns the Gmail-specific search strategy
-func (s *GmailPipelineStrategy) GetSearchStrategy() ports.SearchStrategy {
-	return search_strategies.NewGmailSearchStrategy(s.config, s.logger)
+// ✅ ДОБАВЛЯЕМ конфигурацию для фабрики
+func (s *GmailPipelineStrategy) GetSeaGetSearchStrategyConfigrchStrategy() domain.SearchStrategyConfig {
+	return s.config.SearchConfig
 }

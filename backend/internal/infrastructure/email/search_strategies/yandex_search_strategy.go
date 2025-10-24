@@ -3,6 +3,7 @@ package search_strategies
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,32 +15,97 @@ import (
 // YandexSearchStrategy реализует ports.SearchStrategy для Yandex
 // Соблюдает ограничения Yandex IMAP провайдера
 type YandexSearchStrategy struct {
-	config *domain.EmailProviderConfig
+	config *domain.SearchStrategyConfig
 	logger ports.Logger
 }
 
-// NewYandexSearchStrategy создает новую Yandex-оптимизированную стратегию
-func NewYandexSearchStrategy(
-	config *domain.EmailProviderConfig,
-	logger ports.Logger,
-) *YandexSearchStrategy {
-	// Валидируем конфигурацию при создании
-	if err := config.Validate(); err != nil {
-		logger.Warn(context.Background(),
-			"Yandex search strategy configuration validation warning",
-			"error", err.Error())
+// Configure настраивает стратегию с конфигурацией
+func (s *YandexSearchStrategy) Configure(config *domain.SearchStrategyConfig) error {
+	if config == nil {
+		return fmt.Errorf("search strategy configuration is required")
 	}
 
-	return &YandexSearchStrategy{
-		config: config,
-		logger: logger,
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid search strategy configuration: %w", err)
 	}
+
+	s.config = config
+	s.logger.Info(context.Background(),
+		"Yandex search strategy configured",
+		"complexity", s.GetComplexity().String(),
+		"max_message_ids", s.GetMaxMessageIDs(),
+		"timeframe_days", s.GetTimeframeDays())
+
+	return nil
+}
+
+// GetComplexity возвращает уровень сложности поиска
+func (s *YandexSearchStrategy) GetComplexity() domain.SearchComplexity {
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default complexity")
+		return domain.SearchComplexitySimple
+	}
+
+	configuredComplexity := s.config.Complexity
+
+	// Yandex limitation: принудительно используем Simple complexity
+	if configuredComplexity != domain.SearchComplexitySimple {
+		s.logger.Warn(context.Background(),
+			"Yandex IMAP provider limitation enforced",
+			"configured_complexity", configuredComplexity.String(),
+			"enforced_complexity", domain.SearchComplexitySimple.String())
+		return domain.SearchComplexitySimple
+	}
+
+	return configuredComplexity
+}
+
+// GetMaxMessageIDs возвращает максимальное количество Message-ID
+func (s *YandexSearchStrategy) GetMaxMessageIDs() int {
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default max message IDs")
+		return 1
+	}
+
+	configuredMax := s.config.MaxMessageIDs
+	if configuredMax <= 0 {
+		return 1 // Default for Yandex
+	}
+
+	// Yandex limitation: максимум 1 Message-ID
+	if configuredMax > 1 {
+		s.logger.Warn(context.Background(),
+			"Yandex IMAP provider limitation enforced",
+			"configured_max_message_ids", configuredMax,
+			"enforced_max_message_ids", 1)
+		return 1
+	}
+
+	return configuredMax
+}
+
+// GetTimeframeDays возвращает временной диапазон поиска
+func (s *YandexSearchStrategy) GetTimeframeDays() int {
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default timeframe")
+		return 180
+	}
+
+	if s.config.TimeframeDays > 0 {
+		return s.config.TimeframeDays
+	}
+
+	return 180 // Default for Yandex
 }
 
 // CreateThreadSearchCriteria создает упрощенные IMAP критерии поиска для Yandex
 func (s *YandexSearchStrategy) CreateThreadSearchCriteria(threadData ports.ThreadSearchCriteria) (*imap.SearchCriteria, error) {
 	ctx := context.Background()
 	criteria := &imap.SearchCriteria{}
+
+	if s.config == nil {
+		return nil, fmt.Errorf("search strategy not configured")
+	}
 
 	// YANDEX-COMPATIBLE: Используем только primary Message-ID для надежности
 	if threadData.MessageID != "" {
@@ -63,45 +129,6 @@ func (s *YandexSearchStrategy) CreateThreadSearchCriteria(threadData ports.Threa
 		"provider_limitation", "extended_timeframe_supported")
 
 	return criteria, nil
-}
-
-// GetComplexity возвращает уровень сложности поиска с учетом ограничений Yandex
-func (s *YandexSearchStrategy) GetComplexity() domain.SearchComplexity {
-	configuredComplexity := s.config.GetSearchComplexity()
-
-	// Yandex limitation: принудительно используем Simple complexity для надежности
-	if configuredComplexity != domain.SearchComplexitySimple {
-		s.logger.Warn(context.Background(),
-			"Yandex IMAP provider limitation enforced",
-			"configured_complexity", configuredComplexity.String(),
-			"enforced_complexity", domain.SearchComplexitySimple.String(),
-			"reason", "yandex_imap_limitation_simple_search_only")
-		return domain.SearchComplexitySimple
-	}
-
-	return configuredComplexity
-}
-
-// GetMaxMessageIDs возвращает максимальное количество Message-ID для поиска
-func (s *YandexSearchStrategy) GetMaxMessageIDs() int {
-	configuredMax := s.config.GetMaxMessageIDs()
-
-	// Yandex limitation: максимум 1 Message-ID для надежной работы
-	if configuredMax > 1 {
-		s.logger.Warn(context.Background(),
-			"Yandex IMAP provider limitation enforced",
-			"configured_max_message_ids", configuredMax,
-			"enforced_max_message_ids", 1,
-			"reason", "yandex_imap_limitation_single_message_id")
-		return 1
-	}
-
-	return configuredMax
-}
-
-// GetTimeframeDays возвращает временной диапазон поиска в днях
-func (s *YandexSearchStrategy) GetTimeframeDays() int {
-	return s.config.GetTimeframeDays() // Yandex поддерживает extended timeframe
 }
 
 // normalizeMessageID нормализует Message-ID для поиска

@@ -3,6 +3,7 @@ package search_strategies
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,34 +13,39 @@ import (
 )
 
 // GenericSearchStrategy реализует ports.SearchStrategy для универсальных провайдеров
-// Балансирует между производительностью и надежностью
 type GenericSearchStrategy struct {
-	config *domain.EmailProviderConfig
+	config *domain.SearchStrategyConfig // ✅ ПРАВИЛЬНЫЙ ТИП
 	logger ports.Logger
 }
 
-// NewGenericSearchStrategy создает новую универсальную поисковую стратегию
-func NewGenericSearchStrategy(
-	config *domain.EmailProviderConfig,
-	logger ports.Logger,
-) *GenericSearchStrategy {
-	// Валидируем конфигурацию при создании
-	if err := config.Validate(); err != nil {
-		logger.Warn(context.Background(),
-			"Generic search strategy configuration validation warning",
-			"error", err.Error())
+// Configure настраивает стратегию с конфигурацией
+func (s *GenericSearchStrategy) Configure(config *domain.SearchStrategyConfig) error {
+	if config == nil {
+		return fmt.Errorf("search strategy configuration is required")
 	}
 
-	return &GenericSearchStrategy{
-		config: config,
-		logger: logger,
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid search strategy configuration: %w", err)
 	}
+
+	s.config = config
+	s.logger.Info(context.Background(),
+		"Generic search strategy configured",
+		"complexity", s.GetComplexity().String(),
+		"max_message_ids", s.GetMaxMessageIDs(),
+		"timeframe_days", s.GetTimeframeDays())
+
+	return nil
 }
 
 // CreateThreadSearchCriteria создает сбалансированные IMAP критерии поиска
 func (s *GenericSearchStrategy) CreateThreadSearchCriteria(threadData ports.ThreadSearchCriteria) (*imap.SearchCriteria, error) {
 	ctx := context.Background()
 	criteria := &imap.SearchCriteria{}
+
+	if s.config == nil {
+		return nil, fmt.Errorf("search strategy not configured")
+	}
 
 	// GENERIC-OPTIMIZED: Сбалансированный набор критериев
 	messageIDs := s.collectMessageIDs(threadData)
@@ -62,15 +68,19 @@ func (s *GenericSearchStrategy) CreateThreadSearchCriteria(threadData ports.Thre
 
 	s.logger.Debug(ctx, "Generic search timeframe configured",
 		"timeframe_days", timeframeDays,
-		"since_date", criteria.Since.Format("2006-01-02"),
-		"provider_compatibility", "moderate_timeframe_recommended")
+		"since_date", criteria.Since.Format("2006-01-02"))
 
 	return criteria, nil
 }
 
 // GetComplexity возвращает уровень сложности поиска из конфигурации
 func (s *GenericSearchStrategy) GetComplexity() domain.SearchComplexity {
-	complexity := s.config.GetSearchComplexity()
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default complexity")
+		return domain.SearchComplexityModerate
+	}
+
+	complexity := s.config.Complexity
 
 	// Для универсальных провайдеров рекомендуем Moderate complexity
 	if complexity == domain.SearchComplexityComplex {
@@ -86,7 +96,15 @@ func (s *GenericSearchStrategy) GetComplexity() domain.SearchComplexity {
 
 // GetMaxMessageIDs возвращает максимальное количество Message-ID для поиска
 func (s *GenericSearchStrategy) GetMaxMessageIDs() int {
-	configuredMax := s.config.GetMaxMessageIDs()
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default max message IDs")
+		return 5
+	}
+
+	configuredMax := s.config.MaxMessageIDs
+	if configuredMax <= 0 {
+		return 5 // Default for generic providers
+	}
 
 	// Для универсальных провайдеров ограничиваем разумным максимумом
 	if configuredMax > 10 {
@@ -103,7 +121,15 @@ func (s *GenericSearchStrategy) GetMaxMessageIDs() int {
 
 // GetTimeframeDays возвращает временной диапазон поиска в днях
 func (s *GenericSearchStrategy) GetTimeframeDays() int {
-	configuredDays := s.config.GetTimeframeDays()
+	if s.config == nil {
+		s.logger.Warn(context.Background(), "Search strategy not configured, using default timeframe")
+		return 90
+	}
+
+	configuredDays := s.config.TimeframeDays
+	if configuredDays <= 0 {
+		return 90 // Default for generic providers
+	}
 
 	// Для универсальных провайдеров ограничиваем разумным максимумом
 	if configuredDays > 365 {

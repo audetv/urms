@@ -5,15 +5,6 @@ import (
 	"time"
 )
 
-// SearchComplexity defines the complexity level of search operations
-type SearchComplexity int
-
-const (
-	SearchComplexitySimple SearchComplexity = iota
-	SearchComplexityModerate
-	SearchComplexityComplex
-)
-
 // PipelineHealth represents pipeline health status
 type PipelineHealth struct {
 	Status     string
