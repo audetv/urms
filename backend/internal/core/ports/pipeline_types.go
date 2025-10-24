@@ -68,6 +68,7 @@ type RetryPolicy struct {
 
 // PipelineConfig contains complete pipeline configuration
 type PipelineConfig struct {
+	PipelineStrategy
 	ProviderType    string
 	Strategy        PipelineStrategy
 	MaxConcurrent   int

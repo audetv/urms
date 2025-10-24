@@ -28,20 +28,12 @@ func NewYandexPipelineStrategy(
 
 // GetBatchSize returns the optimal batch size for Yandex from configuration
 func (s *YandexPipelineStrategy) GetBatchSize() int {
-	if s.config.PipelineConfig.FetchBatchSize > 0 {
-		return s.config.PipelineConfig.FetchBatchSize
-	}
-	// Default for Yandex if not configured
-	return 10
+	return s.config.PipelineConfig.GetFetchBatchSize()
 }
 
 // GetWorkerCount returns the optimal number of workers for Yandex from configuration
 func (s *YandexPipelineStrategy) GetWorkerCount() int {
-	if s.config.PipelineConfig.WorkerCount > 0 {
-		return s.config.PipelineConfig.WorkerCount
-	}
-	// Default for Yandex if not configured
-	return 2
+	return s.config.PipelineConfig.GetWorkerCount()
 }
 
 // GetQueueSize returns the optimal queue size for Yandex from configuration
@@ -49,7 +41,6 @@ func (s *YandexPipelineStrategy) GetQueueSize() int {
 	if s.config.PipelineConfig.QueueSize > 0 {
 		return s.config.PipelineConfig.QueueSize
 	}
-	// Default for Yandex if not configured
 	return 20
 }
 
@@ -58,7 +49,6 @@ func (s *YandexPipelineStrategy) GetFetchTimeout() time.Duration {
 	if s.config.PipelineConfig.FetchTimeout > 0 {
 		return s.config.PipelineConfig.FetchTimeout
 	}
-	// Default for Yandex if not configured
 	return 30 * time.Second
 }
 
@@ -67,7 +57,6 @@ func (s *YandexPipelineStrategy) GetProcessTimeout() time.Duration {
 	if s.config.PipelineConfig.ProcessTimeout > 0 {
 		return s.config.PipelineConfig.ProcessTimeout
 	}
-	// Default for Yandex if not configured
 	return 60 * time.Second
 }
 
@@ -75,7 +64,7 @@ func (s *YandexPipelineStrategy) GetProcessTimeout() time.Duration {
 func (s *YandexPipelineStrategy) GetRetryPolicy() ports.RetryPolicy {
 	maxRetries := s.config.PipelineConfig.MaxRetries
 	if maxRetries <= 0 {
-		maxRetries = 2 // Default for Yandex
+		maxRetries = 2
 	}
 
 	return ports.RetryPolicy{
